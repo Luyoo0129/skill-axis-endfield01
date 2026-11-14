@@ -1164,10 +1164,8 @@ class Editor:
                        fill=theme.TEXT_MUTED,
                        font=theme.font(theme.F_TINY), tags=(tag,))
         if trigger:
-            cv.create_text(x + NODE_W - 8, y + 10, anchor="ne", text="触发",
-                           fill=theme.ACCENT, font=theme.font(theme.F_TINY),
-                           tags=(tag,))
-            cv.tag_bind(tag, "<Button-1>", lambda e, i=oi: self._pick_branch_trigger(i))
+            # 触发卡：不弹下拉，直接把技能栏的卡拖上来即可（也保留了拖动手感）
+            pass
         else:
             cv.tag_bind(tag, "<Button-1>",
                         lambda e, i=oi, j=ni: self._branch_node_press(i, j))
@@ -1915,10 +1913,9 @@ class Editor:
             return
         old = ids.index(axis.id)
         new_ids = move_item(ids, old, idx)
-        if new_ids == ids:
-            return
-        self._set_order(new_ids)
-        self.refresh_order()          # 拖动时已经滑到位，这里重画即可
+        if new_ids != ids:
+            self._set_order(new_ids)
+        self.refresh_order()          # 不管顺序变没变都重画，清掉让位动画的中间态
         self.app.rebuild_player()
 
     def _move_node(self, node, idx):

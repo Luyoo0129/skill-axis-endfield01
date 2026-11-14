@@ -79,6 +79,13 @@ class NiceMenu:
 
         win.bind("<Escape>", lambda e: self.close())
         win.bind("<FocusOut>", lambda e: self._fade_out())
+        # 点菜单以外的任何地方都收起（Tk 的 overrideredirect 窗口拿不到焦点时
+        # FocusOut 不会触发，所以再挂一层全局点击判断）
+        try:
+            self._outside_bind = root.bind("<Button-1>", self._on_outside_click,
+                                           add="+")
+        except tk.TclError:
+            self._outside_bind = None
         try:
             win.focus_force()
         except tk.TclError:
@@ -94,7 +101,7 @@ class NiceMenu:
         self._alpha = a
 
     def _fade_in(self, step=0.16):
-        if self._closing:
+        if self._closing or getattr(self, "_destroyed", False):
             return
         nxt = self._alpha + step
         self._set_alpha(nxt if nxt < 1.0 else 1.0)
@@ -102,7 +109,9 @@ class NiceMenu:
             self.win.after(16, lambda: self._fade_in(step))
 
     def _fade_out(self, step=0.18):
-        if self._closing:
+        # 注意：这里不能「已关闭就直接 return」——那会把正在跑的淡出链也掐断，
+        # 窗口会卡在半透明、永远不销毁。
+        if getattr(self, "_destroyed", False):
             return
         self._closing = True
         nxt = self._alpha - step
@@ -111,6 +120,18 @@ class NiceMenu:
             return
         self._set_alpha(nxt)
         self.win.after(16, lambda: self._fade_out(step))
+
+    def _on_outside_click(self, e):
+        if self._closing:
+            return
+        try:
+            x, y = self.win.winfo_rootx(), self.win.winfo_rooty()
+            w, h = self.win.winfo_width(), self.win.winfo_height()
+        except tk.TclError:
+            return
+        if x <= e.x_root <= x + w and y <= e.y_root <= y + h:
+            return
+        self.close()
 
     def _choose(self, value):
         cb = self.on_pick
@@ -125,6 +146,14 @@ class NiceMenu:
         self._fade_out()
 
     def _destroy(self):
+        self._destroyed = True
+        root = self.root
+        try:
+            if self._outside_bind is not None:
+                root.unbind("<Button-1>", self._outside_bind)
+                self._outside_bind = None
+        except (tk.TclError, TypeError):
+            pass
         try:
             self.win.destroy()
         except tk.TclError:
