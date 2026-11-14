@@ -86,6 +86,8 @@ class SettingsDialog:
                         font=theme.font(theme.F_SMALL))
         sp.pack(side="left", ipady=2)
         sp.bind("<KeyRelease>", lambda e: self._on_hold())
+        tk.Label(row2, text="毫秒（默认 280）", bg=theme.PANEL, fg=theme.TEXT_MUTED,
+                 font=theme.font(theme.F_TINY)).pack(side="left", padx=(8, 0))
 
         # ---- 手柄（照游戏内规则）----
         box3 = self._card(body, "手柄", self._pad_rule_text())
