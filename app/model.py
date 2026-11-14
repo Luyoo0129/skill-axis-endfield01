@@ -52,6 +52,23 @@ DEFAULT_PAD_COMBO = PAD_RB
 DEFAULT_PAD_MODIFIER = PAD_LB
 DEFAULT_PAD_SLOTS = {0: PAD_X, 1: PAD_Y, 2: PAD_A, 3: PAD_B}
 
+# 终结技的两种触发风格 —— 游戏内「设置 → 手柄」里选的是哪一种，这边就要跟着切：
+#   hold  ：LB + 面键，长按 = 终结技，短按 = 战技
+#   chord ：LB + RB + 面键 = 终结技，不用长按
+PAD_ULT_HOLD = "hold"
+PAD_ULT_CHORD = "chord"
+PAD_ULT_MODES = (
+    (PAD_ULT_HOLD, "LB + 长按面键"),
+    (PAD_ULT_CHORD, "LB + RB + 面键"),
+)
+
+
+def pad_ult_mode_label(mode):
+    for val, label in PAD_ULT_MODES:
+        if val == mode:
+            return label
+    return PAD_ULT_MODES[0][1]
+
 
 def new_id():
     return uuid.uuid4().hex[:12]
@@ -225,6 +242,11 @@ class Settings:
     pad_modifier: int = DEFAULT_PAD_MODIFIER     # LB
     pad_combo: int = DEFAULT_PAD_COMBO           # RB = 连携技
     pad_slots: dict = field(default_factory=lambda: dict(DEFAULT_PAD_SLOTS))
+    # 终结技触发风格：hold = LB+长按面键，chord = LB+RB+面键
+    pad_ult_mode: str = PAD_ULT_HOLD
+
+    def pad_ult_label(self):
+        return pad_ult_mode_label(self.pad_ult_mode)
 
     def pad_slot_key(self, slot):
         """队伍第 slot 位对应的手柄按键位。"""
@@ -273,6 +295,8 @@ class Settings:
         s.pad_slots = slots
         s.pad_modifier = int(s.pad_modifier or DEFAULT_PAD_MODIFIER)
         s.pad_combo = int(s.pad_combo or DEFAULT_PAD_COMBO)
+        if s.pad_ult_mode not in (PAD_ULT_HOLD, PAD_ULT_CHORD):
+            s.pad_ult_mode = PAD_ULT_HOLD
         s.hold_ms = max(60, int(s.hold_ms or DEFAULT_HOLD_MS))
         s.combo_key = int(s.combo_key or DEFAULT_COMBO_KEY)
         return s

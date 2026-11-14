@@ -161,13 +161,19 @@ C_HOLD = 1128
 
 
 def draw_table(img, d, entries, team, settings):
+    chord = settings.get("pad_ult_mode") == "chord"
     rrect(d, [620, 120, 1200, 640], 14, fill=CARD, outline=LINE, width=1)
     text(d, (644, 140), "技能键位换算", 17, TEXT, bold=True)
     text(d, (644, 166), "手柄动作先换算成等价的数字键，再交给播放器", 12, MUTED)
 
+    # 当前终结技风格，放在标题右侧
+    mode_text = "终结技：LB + RB + 面键" if chord else "终结技：LB + 长按面键"
+    pill(d, 862, 132, mode_text, 11, CARD_2, ACCENT, padx=11, h=24, outline=ACCENT)
+
     hy = 198
+    tap_head, hold_head = ("战技", "终结技") if chord else ("短按", "长按")
     for cx, label in ((C_SLOT, "队伍位"), (C_PAD, "手柄组合"), (C_KEY, "等价键盘键"),
-                      (C_OP, "干员"), (C_TAP, "短按"), (C_HOLD, "长按")):
+                      (C_OP, "干员"), (C_TAP, tap_head), (C_HOLD, hold_head)):
         text(d, (cx, hy), label, 11, MUTED, bold=True)
     d.line([644, hy + 17, 1176, hy + 17], fill=LINE, width=1)
 
@@ -205,8 +211,9 @@ def draw_table(img, d, entries, team, settings):
             img.paste(avatar, (C_OP, y + 4), avatar)
         text(d, (C_OP + 42, y + 21), member or "—", 13, TEXT, bold=True)
 
-        text(d, (C_TAP, y + 21), "战技", 12, DIM)
-        text(d, (C_HOLD, y + 21), "终结技", 12, ACCENT)
+        tap_cell, hold_cell = ("LB + 面键", "LB + RB") if chord else ("战技", "终结技")
+        text(d, (C_TAP, y + 21), tap_cell, 11, DIM)
+        text(d, (C_HOLD, y + 21), hold_cell, 11, ACCENT)
         y += row_h
 
     # 连携技：整行单独高亮
@@ -232,7 +239,7 @@ def draw_table(img, d, entries, team, settings):
 
 # ---------------- 底部核对清单 ----------------
 
-def draw_checklist(d, hold_ms):
+def draw_checklist(d, hold_ms, chord=False):
     rrect(d, [40, 660, 1200, 806], 14, fill=CARD, outline=LINE, width=1)
     text(d, (64, 676), "对着游戏「设置 → 手柄」核对这三条", 15, TEXT, bold=True)
     text(d, (64, 700), "只要有一条对不上，说明默认键位要改；把实际顺序告诉我即可，不用你自己改代码",
@@ -240,8 +247,9 @@ def draw_checklist(d, hold_ms):
 
     items = (
         ("连携技", "是不是 RB（右肩键）单独触发？"),
-        ("战技 / 终结技", "是不是 按住 LB 再按面键？"),
-        ("长按判定", "按住不放 ≥ %dms 算终结技，短于则算战技" % hold_ms),
+        ("战技", "是不是 按住 LB 再按面键？"),
+        ("终结技方式", "游戏里选了「LB + RB + 面键」吗？这边也要选同一项"
+         if chord else "按住不放 ≥ %dms 算终结技，短于则算战技" % hold_ms),
     )
     for i, (head, body) in enumerate(items):
         bx = 64 + i * 372
@@ -252,16 +260,30 @@ def draw_checklist(d, hold_ms):
         text(d, (bx + 50, 760), body, 11, DIM)
 
 
-def draw_legend(d):
+def draw_legend(d, chord=False):
     """左卡片下沿：把「数字代表什么」和操作前置条件说清楚。"""
     text(d, (310, 528), "面键圆里的小数字 = 队伍第几位", 12, DIM, anchor="ma")
-    text(d, (310, 550), "必须先按住 LB，单独按面键不算施放", 12, MUTED, anchor="ma")
+    if chord:
+        text(d, (310, 550), "战技 = LB + 面键　·　终结技 = LB + RB + 面键", 12, MUTED,
+             anchor="ma")
+    else:
+        text(d, (310, 550), "必须先按住 LB，单独按面键不算施放", 12, MUTED, anchor="ma")
     text(d, (310, 584), "默认键位照游戏内设置复刻 · 可在「设置 → 手柄」逐项重绑",
          10, MUTED, anchor="ma")
 
 
-def main():
+def main(argv=None):
+    import argparse
+
+    ap = argparse.ArgumentParser(description="生成手柄按键映射对照图")
+    ap.add_argument("--mode", choices=["hold", "chord"],
+                    help="临时覆盖终结技风格（不改 data/settings.json）")
+    ap.add_argument("--out", help="输出路径，默认 preview/pad_map.png")
+    args = ap.parse_args(argv)
+
     settings = load_json("settings.json", {})
+    if args.mode:
+        settings["pad_ult_mode"] = args.mode
     team = load_json("team.json", {"members": []})
     entries = load_json(os.path.join("icons", "index.json"), [])
 
@@ -276,19 +298,22 @@ def main():
     text(d, (64, 140), "面键 → 队伍位", 17, TEXT, bold=True)
     text(d, (64, 166), "X / Y / A / B 依次对应队伍第 1~4 位", 12, MUTED)
 
+    chord_mode = settings.get("pad_ult_mode") == "chord"
     draw_controller(img, d)
-    draw_legend(d)
+    draw_legend(d, chord_mode)
 
     draw_table(img, d, entries, team, settings)
-    draw_checklist(d, int(settings.get("hold_ms") or 280))
+    draw_checklist(d, int(settings.get("hold_ms") or 280), chord_mode)
 
     text(d, (40, 826),
          "生成时间 %s　·　数据源 data/settings.json + data/team.json"
          % datetime.now().strftime("%Y-%m-%d %H:%M"), 11, MUTED)
 
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    img.save(OUT)
-    print("saved", OUT, img.size)
+    out = args.out or OUT
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    img.save(out)
+    print("saved", out, img.size,
+          "· 终结技风格:", settings.get("pad_ult_mode") or "hold")
 
     slots = settings.get("pad_slots") or {}
     for slot in range(4):
@@ -299,4 +324,4 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

@@ -4,6 +4,7 @@ import tkinter as tk
 
 from . import theme
 from .keys import vk_label
+from .model import PAD_ULT_CHORD
 from .widgets import center_window
 
 
@@ -90,11 +91,16 @@ class TestPanel:
         letters = " / ".join(
             button_name(s.pad_slot_key(i), s.gamepad_scheme) or "?"
             for i in range(4))
+        if s.pad_ult_mode == PAD_ULT_CHORD:
+            pad_line = ("手柄：连携 %s（单独按）　战技 %s + 面键　"
+                        "终结 %s + %s + 面键"
+                        % (pcombo, pmod, pmod, pcombo))
+        else:
+            pad_line = ("手柄：连携 %s　战技/终结 %s + %s（长按 %dms 算终结）"
+                        % (pcombo, pmod, letters, int(s.hold_ms)))
         return ("队伍映射：%s\n"
-                "键盘：连携 %s　长按判定 %d ms\n"
-                "手柄：连携 %s　战技/终结 %s + %s"
-                % (" · ".join(parts), combo, int(s.hold_ms),
-                   pcombo, pmod, letters))
+                "键盘：连携 %s　长按判定 %d ms\n%s"
+                % (" · ".join(parts), combo, int(s.hold_ms), pad_line))
 
     def _verdict(self, vk):
         """这颗键在当前设置下是什么含义。"""
@@ -165,9 +171,13 @@ class TestPanel:
         name = "手柄 " + button_name(bit, scheme)
 
         if bit == s.pad_modifier:
-            verdict = "修饰键（按住它再按字母才是取用技能）"
+            verdict = "修饰键（按住它再按面键才是取用技能）"
         elif bit == s.pad_combo:
-            verdict = "连携技"
+            if s.pad_ult_mode == PAD_ULT_CHORD:
+                verdict = "连携技（按住 %s 时它属于终结技组合）" % button_name(
+                    s.pad_modifier, scheme)
+            else:
+                verdict = "连携技"
         else:
             slot = s.pad_slot_of(bit)
             if slot is None:
@@ -176,8 +186,12 @@ class TestPanel:
                 rot = self.app.store.active_rotation()
                 team = rot.members() if rot else self.app.store.team.normalized()
                 op = team[slot] if slot < len(team) else ""
-                verdict = ("槽位 %d %s（短按战技 / 长按终结）"
-                           % (slot + 1, op or "(空)"))
+                if s.pad_ult_mode == PAD_ULT_CHORD:
+                    verdict = "槽位 %d %s（LB+面键=战技 / LB+RB+面键=终结）" % (
+                        slot + 1, op or "(空)")
+                else:
+                    verdict = ("槽位 %d %s（短按战技 / 长按终结）"
+                               % (slot + 1, op or "(空)"))
 
         self.big.configure(text="%s   →  %s" % (name, verdict))
         self.listbox.insert(0, "%s  bit=0x%04X  %s" % (name, bit, verdict))

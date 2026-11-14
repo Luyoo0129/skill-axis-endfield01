@@ -270,6 +270,81 @@ def test_gamepad():
     check("手柄按键能匹配", r == MATCH)
 
 
+def test_pad_ult_modes():
+    """终结技两种风格：LB+长按面键 / LB+RB+面键。"""
+    from app.padrules import PadRules
+
+    def mk(mode):
+        s = Settings()
+        s.pad_ult_mode = mode
+        return s, PadRules(s)
+
+    # ---- 风格一：LB + 长按面键 ----
+    s, r = mk("hold")
+    LB, RB, X = s.pad_modifier, s.pad_combo, s.pad_slot_key(0)
+    check("默认终结技风格是长按", Settings().pad_ult_mode == "hold")
+    check("单独按面键不算施放", r.handle("down", X, 0.0) is None)
+    check("没按 LB 松开也不触发", r.handle("up", X, 0.05) is None)
+
+    r = PadRules(s)
+    r.handle("down", LB, 0.0)
+    r.handle("down", X, 0.01)
+    a = r.handle("up", X, 0.06)
+    check("风格一：LB+短按面键 = 战技", a == ("press", 0x31, False), repr(a))
+
+    r = PadRules(s)
+    r.handle("down", LB, 0.0)
+    r.handle("down", X, 0.02)
+    a = r.handle("up", X, 0.42)
+    check("风格一：LB+长按面键 = 终结技", a == ("press", 0x31, True), repr(a))
+
+    r = PadRules(s)
+    r.handle("down", LB, 0.0)
+    a = r.handle("down", RB, 0.02)
+    check("风格一：不按 LB 单按 RB 是连携", a == ("press", 0x45, False), repr(a))
+
+    # ---- 风格二：LB + RB + 面键 ----
+    s2, r2 = mk("chord")
+    check("终结技风格二可读回", r2.mode() == "chord")
+    check("风格二：单独 RB 仍算连携",
+          PadRules(s2).handle("down", RB, 0.0) == ("press", 0x45, False))
+
+    r2 = PadRules(s2)
+    r2.handle("down", LB, 0.0)
+    a = r2.handle("down", RB, 0.02)
+    check("风格二：按住 LB 时 RB 不抢连携", a is None, repr(a))
+    a = r2.handle("down", X, 0.05)
+    check("风格二：LB+RB+面键 = 终结技", a == ("press", 0x31, True), repr(a))
+    check("风格二：松开面键不重复触发", r2.handle("up", X, 0.30) is None)
+    check("风格二：松开 RB 不误触连携", r2.handle("up", RB, 0.34) is None)
+
+    r3 = PadRules(s2)
+    r3.handle("down", LB, 0.0)
+    r3.handle("down", X, 0.02)
+    a = r3.handle("up", X, 0.60)
+    check("风格二：光长按不放只算战技", a == ("press", 0x31, False), repr(a))
+
+    # 切风格后残留的按住状态要清掉
+    r4 = PadRules(s2)
+    r4.handle("down", LB, 0.0)
+    r4.reset()
+    check("reset 清掉按住状态", not r4.held and r4.handle("up", X, 0.2) is None)
+
+    # ---- 持久化 ----
+    tmp_dir = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "data", "_selftest_tmp5")
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    os.makedirs(tmp_dir, exist_ok=True)
+    store = Store(tmp_dir)
+    store.settings.pad_ult_mode = "chord"
+    store.save_settings()
+    store2 = Store(tmp_dir)
+    check("终结技风格持久化", store2.settings.pad_ult_mode == "chord")
+    check("旧设置缺字段时默认长按",
+          Settings.from_dict({"hold_ms": 300}).pad_ult_mode == "hold")
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_skip():
     p, rot, axes, s = mk_player(charge_kinds=((KIND_SKILL, KIND_ULT),))
     p.start()
@@ -420,7 +495,7 @@ def main():
     for fn in (test_segment_order, test_play_through, test_slot_mapping,
                test_combo_key, test_ult_requires_hold, test_hold_threshold_setting,
                test_infinite, test_wrong_key, test_key_map, test_any_mode,
-               test_gamepad, test_skip, test_empty_segment_skipped,
+               test_gamepad, test_pad_ult_modes, test_skip, test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,
                test_rotation_team_affects_keys, test_rename_rotation,
                test_store_roundtrip, test_settings_keys, test_export_import,

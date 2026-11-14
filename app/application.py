@@ -14,6 +14,7 @@ from .keys import MODIFIER_VKS
 from .listener import KeyListener
 from .model import Store
 from .overlay import Overlay
+from .padrules import PadRules
 from .player import FINISHED, IGNORED, MATCH, WRONG, Player
 from .testpanel import TestPanel
 
@@ -62,8 +63,7 @@ class Application:
         self._bind_cb = None
         self._pad_bind_cb = None
         self._hold_start = {}       # 数字键按下时刻，用于长按判定
-        self._pad_down = set()      # 手柄当前按住的键
-        self._pad_hold_start = {}   # 手柄槽位键按下时刻
+        self.pad_rules = PadRules(self.settings)   # 手柄组合键判定（含终结技风格）
 
         self.editor = Editor(self)
 
@@ -159,12 +159,6 @@ class Application:
                 cb(bit)
             return
 
-        s = self.settings
-        if phase == "down":
-            self._pad_down.add(bit)
-        else:
-            self._pad_down.discard(bit)
-
         if not self.gamepad.enabled:
             return
 
@@ -174,32 +168,13 @@ class Application:
             except tk.TclError:
                 self.test_panel = None
 
-        # 连携技：单独一个键（默认 RB）
-        if bit == s.pad_combo:
-            if phase == "down":
-                self._press_vk(s.combo_key, hold=False)
+        # 组合键判定全在 PadRules 里：连携 = RB 单按；
+        # 战技/终结 = LB + 面键（长按或再叠 RB，看设置里的终结技风格）
+        action = self.pad_rules.handle(phase, bit, time.monotonic())
+        if not action:
             return
-
-        # 槽位字母：LB + X/Y/A/B，短按=战技，长按=终结技
-        slot = s.pad_slot_of(bit)
-        if slot is None:
-            return
-
-        if phase == "down":
-            if s.pad_modifier in self._pad_down:
-                self._pad_hold_start[bit] = time.monotonic()
-            else:
-                self._pad_hold_start[bit] = None      # 没按 LB，不算技能
-            return
-
-        started = self._pad_hold_start.pop(bit, None)
-        if started is None:
-            return
-        digit = s.slot_key(slot)
-        if digit is None:
-            return
-        elapsed = (time.monotonic() - started) * 1000.0
-        self._press_vk(digit, hold=elapsed >= float(s.hold_ms))
+        _kind, vk, hold = action
+        self._press_vk(vk, hold=hold)
 
     def _press_vk(self, vk, hold=False):
         """把手柄动作换算成「等价的键盘按键」交给播放器。
