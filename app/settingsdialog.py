@@ -3,6 +3,7 @@
 import tkinter as tk
 
 from . import theme
+from .brand import APP_PUBLISHER, APP_VERSION_CN
 from .gamepad import button_name
 from .model import KIND_CN, KINDS, PAD_ULT_CHORD, PAD_ULT_MODES
 from .widgets import center_window
@@ -116,6 +117,9 @@ class SettingsDialog:
         # ---- 底部 ----
         foot = tk.Frame(self.win, bg=theme.BG, padx=20, pady=14)
         foot.pack(fill="x", side="bottom")
+        tk.Label(foot, text="版本 %s　发布者 %s" % (APP_VERSION_CN, APP_PUBLISHER),
+                 bg=theme.BG, fg=theme.TEXT_MUTED,
+                 font=theme.font(theme.F_TINY)).pack(side="left")
         tk.Button(foot, text="完成", command=self.close, bg=theme.ACCENT,
                   fg="#221a06", activebackground=theme.ACCENT_SOFT,
                   activeforeground="#221a06", relief="flat", bd=0,

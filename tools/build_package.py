@@ -46,6 +46,7 @@ def main():
         "--windowed",
         "--name", APP_NAME,
         "--icon", os.path.join(BASE, "assets", "app_icon.ico"),
+        "--version-file", os.path.join(BASE, "assets", "version_info.txt"),
         "--distpath", DIST,
         "--workpath", os.path.join(BASE, "_buildtmp", "work"),
         "--specpath", os.path.join(BASE, "_buildtmp"),
