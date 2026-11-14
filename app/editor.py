@@ -601,6 +601,7 @@ class Editor:
     def _on_slot_select(self, idx):
         cn = self.current_team().normalized()[idx]
         if not cn:
+            self._team_drag = None     # 空位会直接开选择器，别留半截拖拽状态
             self._on_slot_change(idx)
             return
         self.selected_member = cn
@@ -608,8 +609,10 @@ class Editor:
         self.refresh_skills()
 
     # ---------- 队伍拖拽换位 ----------
-    def _team_index_at(self, x):
+    def _team_index_at(self, x, y):
         """canvas 坐标 -> 队伍位（0~3）；落在卡片区外返回 None。"""
+        if y is None or not (0 <= y <= TEAM_CARD_H + 8):
+            return None
         total = 2 + TEAM_CARD_W * 4 + 10 * 3
         if x < 0 or x > total + 10:
             return None
@@ -619,7 +622,7 @@ class Editor:
         return min(3, idx)
 
     def _team_press(self, e):
-        idx = self._team_index_at(e.x)
+        idx = self._team_index_at(e.x, e.y)
         if idx is None:
             self._team_drag = None
             return
@@ -632,7 +635,7 @@ class Editor:
         moved = abs(e.x - d["x"]) + abs(e.y - d["y"]) >= 6
         if not moved:
             return
-        idx = self._team_index_at(e.x)
+        idx = self._team_index_at(e.x, e.y)
         if idx is None:
             idx = d["from"]
         if idx != d["target"]:
@@ -662,10 +665,12 @@ class Editor:
             pass
         if not d:
             return
-        idx = self._team_index_at(e.x)
+        idx = self._team_index_at(e.x, e.y)
         moved = abs(e.x - d["x"]) + abs(e.y - d["y"]) >= 6
         if not moved or idx is None or idx == d["from"]:
-            self.refresh_team()          # 只是点了一下，还原描边
+            # 只是点了一下：除了还原描边，别重建 item（重建会让「双击更换」失手）
+            if d["target"] != d["from"]:
+                self.refresh_team()
             return
 
         members = self.current_team().normalized()
