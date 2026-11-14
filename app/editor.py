@@ -797,6 +797,14 @@ class Editor:
             for j, node in enumerate(opt.get("nodes") or []):
                 k = j + (1 if b_oi == oi and j >= b_gap else 0)
                 add("br_%d_%d" % (oi, j), row_start + k * step, ry)
+
+        # 末尾虚线框也跟着走：往主线插一张，它整体右移一格
+        last_branch = bool(axis.nodes and
+                           getattr(axis.nodes[-1], "kind", "") == KIND_BRANCH)
+        slot_x = 8 + (len(axis.nodes) - (1 if last_branch else 0)) * step
+        if main_idx is not None:
+            slot_x += step
+        targets.append(("tl_slot", slot_x, 18))
         self._anim_timeline.move_to(targets)
 
     def _preview_insert(self, anim, count, gap, tag_of, base, step, fixed=18):
@@ -1040,6 +1048,8 @@ class Editor:
             x += NODE_W + NODE_GAP
 
         # 放置区（末尾是分支时，它就画在分支前面）
+        slot_tag = "tl_slot"
+        _before = set(cv.find_all())
         for sx0 in range(x, x + NODE_W, 12):
             cv.create_line(sx0, y, min(sx0 + 7, x + NODE_W), y, fill=theme.BORDER,
                            width=2)
@@ -1056,6 +1066,8 @@ class Editor:
                        font=theme.font(theme.F_TINY))
         cv.create_text(x + NODE_W / 2, y + 78, text="到这里", fill=theme.TEXT_MUTED,
                        font=theme.font(theme.F_TINY))
+        for _i in set(cv.find_all()) - _before:
+            cv.addtag_withtag(slot_tag, _i)
 
         if last_is_branch:
             self._node_card(cv, nodes[-1], x + NODE_W + NODE_GAP, y)
@@ -1504,7 +1516,8 @@ class Editor:
                 return
 
             if kind == "new":
-                self._pending_drop = target
+                self._pending_drop = target[1] if (target and target[0] == "main") \
+                    else target
                 self._preview_new_target(target)
                 return
             if target is not None and target[0] == "trigger":
@@ -1703,6 +1716,15 @@ class Editor:
                     j += 1
                 add(tag, ("branch", oi), j)
 
+        last_branch = bool(axis.nodes and
+                           getattr(axis.nodes[-1], "kind", "") == KIND_BRANCH)
+        slot_x = 8 + (len(axis.nodes) - (1 if last_branch else 0)) * step
+        slot_shift = 0
+        if src_main is not None:
+            slot_shift -= 1
+        if target is not None and target[0] == "main":
+            slot_shift += 1
+        targets.append(("tl_slot", slot_x + slot_shift * step, 18))
         self._anim_timeline.move_to(targets)
 
     def _branch_insert(self, oi, gap, operator, kind, stage=1):
