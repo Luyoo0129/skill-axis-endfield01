@@ -1,35 +1,40 @@
 # -*- coding: utf-8 -*-
-"""分支点设置：给每个分支选「触发键 + 走哪条路线轴 + 是否汇合」。
+"""分支点编辑：可嵌进主界面时间轴下方（不再开弹窗）。
 
-设计上不新画一套编辑界面：路线本身就是普通技能轴（role=route），
-在左边栏能像别的轴一样加节点；这里只配「按哪个键走哪条」。
+设计要点（用户 2026-11-14 定）：
+- 分支点仍是一个菱形节点；**单击就地在时间轴下方展开设置**
+- 每条分支一行：触发干员 / 种类 → 路线轴 → 汇合方式，右侧可删
+- 路线内容不在面板里编辑，只显示「名字 + 节点数」和「编辑路线」按钮，
+  点它就切到那条路线轴继续排（路线轴本身是普通轴，左边栏能编辑）
+- 改动即时保存（没有「保存」按钮），收起靠「收起」或点时间轴空白处
 """
 import tkinter as tk
 
 from . import theme
-from .model import KIND_CN, KINDS, ROLE_ROUTE
-from .widgets import center_window
+from .model import KIND_CN, KINDS, ROLE_ROUTE, ROLE_ROUTE as _ROUTE
+from .textdialog import ask_text
 
 
-class BranchDialog:
-    def __init__(self, app, node, on_save):
+class BranchEditor:
+    """把分支设置画进 parent 这个 Frame 里。"""
+
+    def __init__(self, parent, app, node, on_change):
+        self.parent = parent
         self.app = app
         self.store = app.store
         self.node = node
-        self.on_save = on_save
-        # 复制一份，取消就不影响原数据
-        self.options = [dict(o) for o in (node.options or [])]
-        if not self.options:
-            self.options = [self._blank_option()]
+        self.on_change = on_change
+        if not node.options:
+            node.options = [self._blank_option()]
 
-        self.win = tk.Toplevel(app.root)
-        self.win.title("分支设置")
-        self.win.configure(bg=theme.BG)
-        self.win.transient(app.root)
-        self.win.grab_set()
+    # ---------- 数据 ----------
+    def _team(self):
+        rot = self.store.active_rotation()
+        members = rot.members() if rot else self.store.team.normalized()
+        return [m for m in members if m]
 
-        self._build()
-        center_window(self.win, app.root, 640, 460)
+    def _route_axes(self):
+        return [a for a in self.store.axes if getattr(a, "role", "") == ROLE_ROUTE]
 
     def _blank_option(self):
         team = self._team()
@@ -41,108 +46,103 @@ class BranchDialog:
             "merge": True,
         }
 
-    def _team(self):
-        rot = self.store.active_rotation()
-        members = rot.members() if rot else self.store.team.normalized()
-        return [m for m in members if m]
-
-    def _route_axes(self):
-        return [a for a in self.store.axes if getattr(a, "role", "") == ROLE_ROUTE]
+    def options(self):
+        return self.node.options or []
 
     # ---------- 界面 ----------
-    def _build(self):
-        head = tk.Frame(self.win, bg=theme.BG, padx=18, pady=14)
-        head.pack(fill="x")
-        tk.Label(head, text="分支设置", bg=theme.BG, fg=theme.TEXT,
-                 font=theme.font(theme.F_TITLE, True)).pack(side="left")
-        tk.Label(head, text="按到哪个键 → 走哪条路线轴", bg=theme.BG,
-                 fg=theme.TEXT_MUTED, font=theme.font(theme.F_TINY)).pack(
-            side="left", padx=(10, 0))
-
-        body = tk.Frame(self.win, bg=theme.BG, padx=18)
-        body.pack(fill="both", expand=True)
-
-        self.rows = tk.Frame(body, bg=theme.PANEL, padx=8, pady=8)
-        self.rows.pack(fill="both", expand=True)
-        self._render_rows()
-
-        foot = tk.Frame(body, bg=theme.BG)
-        foot.pack(fill="x", pady=(8, 0))
-        tk.Button(foot, text="＋ 加一条分支", command=self._add_row,
-                  bg=theme.PANEL_3, fg=theme.TEXT, relief="flat", bd=0,
-                  highlightthickness=0, cursor="hand2",
-                  font=theme.font(theme.F_SMALL), padx=12, pady=5).pack(side="left")
-
-        bottom = tk.Frame(self.win, bg=theme.BG, padx=18, pady=14)
-        bottom.pack(fill="x", side="bottom")
-        tk.Button(bottom, text="保存", command=self.save, bg=theme.ACCENT,
-                  fg="#221a06", relief="flat", bd=0, highlightthickness=0,
-                  cursor="hand2", font=theme.font(theme.F_BODY, True),
-                  padx=20, pady=6).pack(side="right")
-        tk.Button(bottom, text="取消", command=self.close, bg=theme.PANEL_3,
-                  fg=theme.TEXT, relief="flat", bd=0, highlightthickness=0,
-                  cursor="hand2", font=theme.font(theme.F_BODY),
-                  padx=16, pady=6).pack(side="right", padx=(0, 8))
-
-        self.win.bind("<Escape>", lambda e: self.close())
-
-    def _render_rows(self):
-        for w in self.rows.winfo_children():
+    def build(self):
+        for w in self.parent.winfo_children():
             w.destroy()
-        self.row_widgets = []
-        if not self.options:
-            tk.Label(self.rows, text="还没有分支，点下面「＋ 加一条分支」",
+
+        head = tk.Frame(self.parent, bg=theme.PANEL)
+        head.pack(fill="x")
+        tk.Label(head, text="分支点设置", bg=theme.PANEL, fg=theme.ACCENT,
+                 font=theme.font(theme.F_SECTION, True)).pack(side="left")
+        tk.Label(head, text="按到哪个键 → 走哪条路线", bg=theme.PANEL,
+                 fg=theme.TEXT_MUTED, font=theme.font(theme.F_TINY)).pack(
+            side="left", padx=(8, 0))
+        tk.Button(head, text="＋ 添加分支", command=self._add,
+                  bg=theme.PANEL_3, fg=theme.CYAN, relief="flat", bd=0,
+                  highlightthickness=0, cursor="hand2",
+                  font=theme.font(theme.F_TINY), padx=10, pady=3).pack(side="right",
+                                                                     padx=(6, 0))
+        tk.Button(head, text="收起", command=self._collapse,
+                  bg=theme.PANEL_3, fg=theme.TEXT_DIM, relief="flat", bd=0,
+                  highlightthickness=0, cursor="hand2",
+                  font=theme.font(theme.F_TINY), padx=10, pady=3).pack(side="right")
+
+        if not self.options():
+            tk.Label(self.parent, text="还没有分支，点「＋ 添加分支」",
                      bg=theme.PANEL, fg=theme.TEXT_MUTED,
-                     font=theme.font(theme.F_SMALL)).pack(anchor="w")
+                     font=theme.font(theme.F_SMALL), anchor="w").pack(
+                fill="x", pady=6)
             return
 
-        head = tk.Frame(self.rows, bg=theme.PANEL)
-        head.pack(fill="x", pady=(0, 4))
-        for text, width in (("触发干员", 10), ("种类", 6), ("路线轴", 16),
-                            ("走完", 8)):
-            tk.Label(head, text=text, bg=theme.PANEL, fg=theme.TEXT_MUTED,
-                     font=theme.font(theme.F_TINY), width=width, anchor="w").pack(
-                side="left")
+        cols = tk.Frame(self.parent, bg=theme.PANEL)
+        cols.pack(fill="x", pady=(6, 2))
+        for label, width in (("触发干员", 9), ("种类", 5), ("路线轴", 14),
+                             ("走完", 8), ("路线内容", 16)):
+            tk.Label(cols, text=label, bg=theme.PANEL, fg=theme.TEXT_MUTED,
+                     font=theme.font(theme.F_TINY), width=width,
+                     anchor="w").pack(side="left")
 
-        for i, opt in enumerate(self.options):
-            row = tk.Frame(self.rows, bg=theme.PANEL)
-            row.pack(fill="x", pady=2)
+        for i, opt in enumerate(self.options()):
+            self._row(i, opt)
 
-            team = self._team()
-            op_var = tk.StringVar(value=opt.get("operator") or (team[0] if team else ""))
-            self._menu(row, op_var, team or ["（队伍为空）"], 10,
-                       lambda v, o=opt: o.update(operator=v))
+    def _row(self, i, opt):
+        row = tk.Frame(self.parent, bg=theme.PANEL_2)
+        row.pack(fill="x", pady=1)
 
-            kind_var = tk.StringVar(value=KIND_CN.get(opt.get("kind"), "战技"))
-            self._menu(row, kind_var, [KIND_CN[k] for k in KINDS], 6,
-                       lambda v, o=opt: o.update(kind=self._kind_of(v)))
+        team = self._team()
+        op = opt.get("operator") or (team[0] if team else "")
+        opt["operator"] = op
+        self._menu(row, op, team or ["（队伍为空）"], 9,
+                   lambda v, o=opt: o.update(operator=v))
 
-            axes = self._route_axes()
-            names = [a.name for a in axes] or ["（先建路线轴）"]
-            cur = opt.get("axis") or ""
-            cur_name = next((a.name for a in axes if a.id == cur), names[0])
-            axis_var = tk.StringVar(value=cur_name)
-            self._menu(row, axis_var, names, 16,
-                       lambda v, o=opt: o.update(axis=self._axis_id(v)))
+        kind_cn = KIND_CN.get(opt.get("kind"), "战技")
+        self._menu(row, kind_cn, [KIND_CN[k] for k in KINDS], 5,
+                   lambda v, o=opt: o.update(kind=self._kind_of(v)))
 
-            merge_var = tk.StringVar(value="汇合" if opt.get("merge", True) else "各走各的")
-            self._menu(row, merge_var, ["汇合", "各走各的"], 8,
-                       lambda v, o=opt: o.update(merge=(v == "汇合")))
+        axes = self._route_axes()
+        names = [a.name for a in axes] or ["（先建路线轴）"]
+        cur = opt.get("axis") or ""
+        cur_name = next((a.name for a in axes if a.id == cur), names[0])
+        self._menu(row, cur_name, names, 14,
+                   lambda v, o=opt: o.update(axis=self._axis_id(v)))
 
-            tk.Button(row, text="删", command=lambda i=i: self._del_row(i),
-                      bg=theme.PANEL_3, fg=theme.BAD, relief="flat", bd=0,
-                      highlightthickness=0, cursor="hand2",
-                      font=theme.font(theme.F_TINY), padx=8).pack(side="left")
+        merge_cn = "汇合" if opt.get("merge", True) else "各走各的"
+        self._menu(row, merge_cn, ["汇合", "各走各的"], 8,
+                   lambda v, o=opt: o.update(merge=(v == "汇合")))
 
-    def _menu(self, parent, var, values, width, on_pick):
+        # 路线内容：名字 + 节点数（只读预览）
+        target = self._axis_by_id(opt.get("axis") or "")
+        if target is None:
+            summary = "未选路线"
+        else:
+            summary = "%d 个节点" % len(target.nodes)
+        tk.Label(row, text=summary, bg=theme.PANEL_2, fg=theme.TEXT_MUTED,
+                 font=theme.font(theme.F_TINY), width=12, anchor="w").pack(
+            side="left")
+        tk.Button(row, text="编辑路线", command=lambda a=target: self._goto(a),
+                  bg=theme.PANEL_3, fg=theme.CYAN, relief="flat", bd=0,
+                  highlightthickness=0, cursor="hand2",
+                  font=theme.font(theme.F_TINY), padx=6, pady=1).pack(
+            side="left", padx=(2, 4))
+        tk.Button(row, text="×", command=lambda i=i: self._del(i),
+                  bg=theme.PANEL_3, fg=theme.BAD, relief="flat", bd=0,
+                  highlightthickness=0, cursor="hand2",
+                  font=theme.font(theme.F_TINY), padx=6, pady=1).pack(side="left")
+
+    def _menu(self, parent, value, values, width, on_pick):
+        var = tk.StringVar(value=value)
         m = tk.OptionMenu(parent, var, *values,
-                          command=lambda v: (on_pick(v), self._render_rows()))
+                          command=lambda v: (on_pick(v), self._changed()))
         m.configure(bg=theme.PANEL_2, fg=theme.TEXT, relief="flat", bd=0,
                     highlightthickness=0, anchor="w",
-                    font=theme.font(theme.F_SMALL), width=width)
+                    font=theme.font(theme.F_TINY), width=width)
         m["menu"].configure(bg=theme.PANEL_2, fg=theme.TEXT,
-                            font=theme.font(theme.F_SMALL))
-        m.pack(side="left", padx=(0, 6))
+                            font=theme.font(theme.F_TINY))
+        m.pack(side="left", padx=(0, 4))
         return m
 
     def _kind_of(self, label):
@@ -151,6 +151,12 @@ class BranchDialog:
                 return k
         return KINDS[0]
 
+    def _axis_by_id(self, axis_id):
+        for a in self._route_axes():
+            if a.id == axis_id:
+                return a
+        return None
+
     def _axis_id(self, name):
         for a in self._route_axes():
             if a.name == name:
@@ -158,36 +164,32 @@ class BranchDialog:
         return ""
 
     # ---------- 动作 ----------
-    def _add_row(self):
-        self.options.append(self._blank_option())
-        self._render_rows()
-
-    def _del_row(self, i):
-        if 0 <= i < len(self.options):
-            self.options.pop(i)
-        self._render_rows()
-
-    def save(self):
-        clean = []
-        for o in self.options:
-            op = str(o.get("operator") or "")
-            if not op:
-                continue
-            clean.append({
-                "operator": op,
-                "kind": o.get("kind") if o.get("kind") in KINDS else KINDS[0],
-                "axis": str(o.get("axis") or ""),
-                "merge": bool(o.get("merge", True)),
-            })
-        self.on_save(clean)
-        self.close()
-
-    def close(self):
+    def _changed(self):
         try:
-            self.win.grab_release()
-        except tk.TclError:
+            self.on_change()
+        except Exception:  # noqa: BLE001
             pass
-        try:
-            self.win.destroy()
-        except tk.TclError:
-            pass
+        self.build()
+
+    def _add(self):
+        self.options().append(self._blank_option())
+        self._changed()
+
+    def _del(self, i):
+        opts = self.options()
+        if 0 <= i < len(opts):
+            opts.pop(i)
+        self._changed()
+
+    def _goto(self, axis):
+        if axis is not None:
+            self.app.editor.select_axis(axis.id)
+
+    def _collapse(self):
+        self.app.editor.close_branch_panel()
+
+    def new_route_axis(self):
+        """在面板里直接建一条路线轴，命名走「路线 · N」。"""
+        axis = self.store.add_axis(_ROUTE)
+        self.app.editor.refresh_order()
+        return axis

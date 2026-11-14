@@ -273,6 +273,11 @@ class Editor:
         self.timeline.pack(fill="both", expand=True, pady=(6, 0))
         self.timeline.bind("<Button-1>", lambda e: self._select_node(None))
 
+        # 分支设置：就地嵌在时间轴下方（默认收起）
+        self.branch_panel = tk.Frame(tl_wrap, bg=theme.PANEL, padx=10, pady=8)
+        self.branch_editor = None
+        self._branch_node = None
+
     # ================= 刷新 =================
     def refresh_all(self):
         # 先确保有一个选中干员，技能区才有内容
@@ -530,6 +535,7 @@ class Editor:
 
     def select_axis(self, axis_id):
         self.current_axis_id = axis_id
+        self.close_branch_panel()      # 切轴就收起分支设置
         self.refresh_order()
         self.refresh_timeline()
 
@@ -1018,8 +1024,6 @@ class Editor:
             cv.create_text(cx, cy + 22, text="双击设置", fill=theme.TEXT_MUTED,
                            font=theme.font(theme.F_TINY), tags=(tag,))
             cv.tag_bind(tag, "<Button-1>", lambda e, n=node: self._node_press(n, e))
-            cv.tag_bind(tag, "<Double-Button-1>",
-                        lambda e, n=node: self.edit_branch(n))
             return
         rounded_rect(cv, x, y, x + NODE_W, y + NODE_H, r=10,
                      fill=theme.PANEL_2, outline=theme.BORDER, tags=(tag,))
@@ -1041,7 +1045,8 @@ class Editor:
         self._begin_drag({"type": "move", "node": node}, node.operator or "节点")
 
     def _select_node(self, node_id):
-        pass
+        # 点时间轴空白处：收起分支设置
+        self.close_branch_panel()
 
     def _node_label(self, node):
         """节点显示名：多形态用登记的名字（如「战技·意诀」），否则用种类名。"""
@@ -1091,16 +1096,41 @@ class Editor:
         self.refresh_timeline()
 
     def edit_branch(self, node):
+        """单击分支点：在时间轴下方就地展开设置（不再弹窗）。"""
         if node is None or getattr(node, "kind", "") != KIND_BRANCH:
             return
-        from .branchdialog import BranchDialog
+        self._open_branch_panel(node)
 
-        def apply(options):
-            node.options = options
+    def _open_branch_panel(self, node):
+        from .branchdialog import BranchEditor
+
+        self._branch_node = node
+        if getattr(self, "branch_panel", None) is None:
+            return
+        self.branch_panel.pack(fill="x", pady=(8, 0))
+        self.branch_editor = BranchEditor(self.branch_panel, self.app, node,
+                                          self._on_branch_changed)
+        self.branch_editor.build()
+
+    def _on_branch_changed(self):
+        node = getattr(self, "_branch_node", None)
+        if node is not None:
             self.store.save_axes()
-            self.refresh_timeline()
+        self.refresh_timeline()
+        self.app.refresh_overlay()
+        editor = getattr(self, "branch_editor", None)
+        if editor is not None and getattr(editor, "node", None) is node:
+            editor.build()          # 行数/路线节点数跟着数据走
 
-        BranchDialog(self.app, node, apply)
+    def close_branch_panel(self):
+        self._branch_node = None
+        self.branch_editor = None
+        panel = getattr(self, "branch_panel", None)
+        if panel is not None:
+            try:
+                panel.pack_forget()
+            except tk.TclError:
+                pass
 
     # ---------- 拖拽 ----------
     def _begin_drag(self, payload, label, image=None):
@@ -1282,6 +1312,10 @@ class Editor:
             if drag.get("type") == "new":
                 self.add_node(self.selected_member, drag["kind"], None,
                               drag.get("stage", 1))
+            elif drag.get("type") == "move":
+                node = drag.get("node")
+                if node is not None and getattr(node, "kind", "") == KIND_BRANCH:
+                    self.edit_branch(node)     # 单击分支点就展开设置
             return
 
         if drag.get("type") == "team":
@@ -1306,6 +1340,13 @@ class Editor:
         if not moved:
             if drag.get("type") == "new":
                 self.add_node(self.selected_member, drag["kind"])
+            elif drag.get("type") == "move":
+                node = drag.get("node")
+                if node is not None and getattr(node, "kind", "") == KIND_BRANCH:
+                    # 单击分支点：就地展开分支设置
+                    self.edit_branch(node)
+                else:
+                    self.close_branch_panel()
             return
 
         if drag.get("type") == "new":
