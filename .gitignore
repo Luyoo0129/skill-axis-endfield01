@@ -29,3 +29,4 @@ preview/
 github_upload/
 _*.py
 交接摘要.md
+.gittools/
