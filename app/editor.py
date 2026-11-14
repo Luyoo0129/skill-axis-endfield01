@@ -765,6 +765,40 @@ class Editor:
             targets.append((tag, fixed, pos) if vertical else (tag, pos, fixed))
         anim.move_to(targets)
 
+    def _preview_new_target(self, target):
+        """技能栏拖进来的实时预览：主线让位 / 分支行让位 / 触发卡不动。
+
+        每次都给**所有**主轴与分支卡片算目标，来回拖也不会留下上次的残影。
+        """
+        axis = self.current_axis()
+        if axis is None:
+            return
+        step = NODE_W + NODE_GAP
+        row_start = 10 + NODE_W + NODE_GAP
+        offs = (self._drag or {}).get("offs") or {}
+        targets = []
+
+        def add(tag, x, y):
+            off = offs.get(tag, (0, 0))
+            ox, oy = off if isinstance(off, tuple) else (off, 0)
+            targets.append((tag, x + ox, y + oy))
+
+        main_idx = target[1] if target and target[0] == "main" else None
+        b_oi = target[1] if target and target[0] == "branch" else None
+        b_gap = target[2] if target and target[0] == "branch" else None
+
+        for i, node in enumerate(axis.nodes):
+            j = i + (1 if main_idx is not None and i >= main_idx else 0)
+            add("nd_%s" % node.id, 8 + j * step, 18)
+
+        geom = self._branch_row_geometry()
+        for oi, opt in enumerate(self._branch_option_list()):
+            ry = geom.get(oi, (18 + NODE_H + 18, 0))[0]
+            for j, node in enumerate(opt.get("nodes") or []):
+                k = j + (1 if b_oi == oi and j >= b_gap else 0)
+                add("br_%d_%d" % (oi, j), row_start + k * step, ry)
+        self._anim_timeline.move_to(targets)
+
     def _preview_insert(self, anim, count, gap, tag_of, base, step, fixed=18):
         """新项目要插进来：gap 之后的项目整体后移一格，腾出位置。"""
         if gap is None:
@@ -1469,6 +1503,10 @@ class Editor:
                                          self._drag["idx"]), target)
                 return
 
+            if kind == "new":
+                self._pending_drop = target
+                self._preview_new_target(target)
+                return
             if target is not None and target[0] == "trigger":
                 self._pending_drop = target
                 return
@@ -1482,12 +1520,6 @@ class Editor:
 
             idx = target[1] if target is not None else None
             self._pending_drop = idx
-            if kind == "new":
-                # 从技能栏拖一张新技能进来：只腾位置，没有源节点
-                self._preview_insert(self._anim_timeline, len(nodes), idx,
-                                     lambda i: "nd_%s" % nodes[i].id, 8,
-                                     NODE_W + NODE_GAP, fixed=18)
-                return
             node = self._drag.get("node")
             from_idx = nodes.index(node) if node in nodes else 0
             self._preview_once("move", self.timeline,

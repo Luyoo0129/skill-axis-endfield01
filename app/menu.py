@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """好看一点的弹出菜单：自绘圆角面板 + 淡入淡出，替代 tk.Menu 的方块样式。"""
+import time
 import tkinter as tk
 
 from . import theme
@@ -17,6 +18,7 @@ class NiceMenu:
         self.width = width or self.WIDTH
         self._alpha = 0.0
         self._closing = False
+        self._born = time.monotonic()
 
         win = tk.Toplevel(root)
         win.overrideredirect(True)
@@ -122,7 +124,10 @@ class NiceMenu:
         self.win.after(16, lambda: self._fade_out(step))
 
     def _on_outside_click(self, e):
-        if self._closing:
+        if self._closing or getattr(self, "_destroyed", False):
+            return
+        # 刚弹出的这一下点击会冒泡到 root，别把自己立刻关掉
+        if time.monotonic() - self._born < 0.15:
             return
         try:
             x, y = self.win.winfo_rootx(), self.win.winfo_rooty()
