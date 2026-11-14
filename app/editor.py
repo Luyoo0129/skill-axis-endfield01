@@ -266,10 +266,21 @@ class Editor:
         _btn(head, "复制节点", self.duplicate_node, "ghost").pack(side="right", padx=3)
         _btn(head, "删除节点", self.delete_node, "danger").pack(side="right", padx=3)
 
-        self.timeline = tk.Canvas(tl_wrap, bg=theme.BG_2, highlightthickness=0, bd=0,
+        tl_row = tk.Frame(tl_wrap, bg=theme.BG_2)
+        tl_row.pack(fill="both", expand=True, pady=(6, 0))
+        self.timeline = tk.Canvas(tl_row, bg=theme.BG_2, highlightthickness=0, bd=0,
                                   height=NODE_H + 40)
-        self.timeline.pack(fill="both", expand=True, pady=(6, 0))
-        self.timeline.bind("<Button-1>", lambda e: self._select_node(None))
+        self.tl_scroll = tk.Scrollbar(tl_row, command=self.timeline.yview,
+                                      bg=theme.BG_2, troughcolor=theme.PANEL_2,
+                                      relief="flat")
+        self.timeline.configure(yscrollcommand=self.tl_scroll.set)
+        self.timeline.pack(side="left", fill="both", expand=True)
+        self.tl_scroll.pack(side="right", fill="y")
+        self.timeline.bind("<MouseWheel>",
+                           lambda e: self.timeline.yview_scroll(
+                               int(-e.delta / 120), "units"))
+        # 注意：不要在这里绑「点空白收起分支」——它会先于松手执行，
+        # 导致点菱形时先收起再展开，永远关不上。开合只由菱形自己切换。
 
         # 分支展开状态：存的是当前展开的分支节点 id（点菱形切换）
         self._expanded_branch = None
@@ -992,6 +1003,11 @@ class Editor:
                 row_w = self._branch_row(cv, oi, opt, branch_y)
                 width = max(width, row_w + 24)
                 branch_y += NODE_H + 16
+            if not expanded:
+                cv.create_text(10, branch_y + 4, anchor="w",
+                               text="还没有分支，点下面「＋ 加一条分支」",
+                               fill=theme.TEXT_MUTED,
+                               font=theme.font(theme.F_TINY))
             height = branch_y + 10
             tag = "bn_add"
             rounded_rect(cv, 10, branch_y - 2, 10 + 96, branch_y + 22, r=6,
@@ -1007,6 +1023,8 @@ class Editor:
 
         cv.configure(height=height,
                      scrollregion=(0, 0, width, height))
+        if expanded:
+            cv.yview_moveto(0)      # 保持主线在上，分支往下滚着看
         self.tl_title.configure(text="技能轴 · %s" % axis.name, fg=color)
         self._sync_repeat_controls(axis)
 
@@ -1218,8 +1236,8 @@ class Editor:
         self._begin_drag({"type": "move", "node": node}, node.operator or "节点")
 
     def _select_node(self, node_id):
-        # 点时间轴空白处：收起分支设置
-        self.close_branch_panel()
+        # 保留给旧调用；分支开合只由菱形切换
+        pass
 
     def _node_label(self, node):
         """节点显示名：多形态用登记的名字（如「战技·意诀」），否则用种类名。"""
@@ -1263,7 +1281,13 @@ class Editor:
         axis = self.current_axis()
         if not axis:
             return
-        node = Node(kind=KIND_BRANCH, options=[])
+        team = [m for m in self.current_team().normalized() if m]
+        node = Node(kind=KIND_BRANCH, options=[{
+            "trigger": {"operator": team[0] if team else "",
+                        "kind": KIND_SKILL, "stage": 1},
+            "nodes": [],
+            "next": "",
+        }])
         axis.nodes.append(node)
         self.store.save_axes()
         self.refresh_timeline()
