@@ -25,6 +25,18 @@ def main():
         print("缺少 PyInstaller，请先运行 _fetch_pyinstaller.py")
         return 1
 
+    # 先确认目标目录没被占用：程序正开着时 PyInstaller 会删掉旧目录再失败，
+    # 留下一个残缺的 dist（用户下次就启动不了）。
+    if os.path.isdir(OUT_DIR):
+        probe = os.path.join(OUT_DIR, APP_NAME + ".exe")
+        try:
+            if os.path.isfile(probe):
+                with open(probe, "ab"):
+                    pass
+        except OSError:
+            print("目标 exe 正被占用（程序还开着？）——先退出程序再打包。")
+            return 2
+
     env = dict(os.environ)
     env["PYTHONPATH"] = LIBS + os.pathsep + env.get("PYTHONPATH", "")
 
