@@ -35,15 +35,29 @@ def ease_out(t):
 
 
 class Animator:
-    """单个 canvas 的位移动画：同一时间只跑一条，新的会顶掉旧的。"""
+    """单个 canvas 的「跟随目标」动画。
+
+    以前是每次 mousemove 都 cancel 上一条再重启一条 8 帧补间：
+    拖动频率高时（60~120Hz）会不停重启，看起来一顿一顿的。
+    现在改成**一条常驻循环**：
+        move_to() 只更新目标位置，循环按帧把内容往最新目标推，
+        全部到位后自动停。
+    这样不论鼠标多快，都是同一套平滑跟随。
+    """
+
+    # 每帧向目标靠近的比例（越大越快）；按帧时间再折算一次，避免掉帧变慢
+    FOLLOW = 0.55
+    EPS = 0.6
 
     def __init__(self, root, canvas):
         self.root = root
         self.canvas = canvas
         self._job = None
+        self._targets = {}
 
     # ---------- 控制 ----------
     def cancel(self):
+        self._targets.clear()
         if self._job is not None:
             try:
                 self.root.after_cancel(self._job)
@@ -56,61 +70,61 @@ class Animator:
 
     # ---------- 动画 ----------
     def move_to(self, targets, duration=MOVE_MS, done=None):
-        """targets: [(tag, x, y)] —— tag 想要到达的左上角坐标（绝对）。
+        """targets: [(tag, x, y)] —— tag 的目标左上角坐标（绝对）。
 
-        每次都从「当前实际位置」重新算位移，所以连续调用是收敛的，
-        不会像累加增量那样越跑越远。
+        只记录目标，动画循环会把它们平滑推过去；重复调用只更新目标，
+        不会重启循环，所以高频拖动也顺。
         """
-        self.cancel()
-        moves = []
         for tag, x, y in targets:
+            self._targets[tag] = (float(x), float(y))
+        if done is not None:
+            self._pending_done = done
+        if self._job is None and self._targets:
+            self._schedule()
+
+    def _schedule(self):
+        try:
+            self._job = self.root.after(2, self._step)
+        except tk.TclError:
+            self._job = None
+            self._finish()
+
+    def _step(self):
+        self._job = None
+        remaining = 0
+        for tag, (tx, ty) in list(self._targets.items()):
             try:
                 box = self.canvas.bbox(tag)
             except tk.TclError:
-                continue
+                box = None
             if not box:
+                self._targets.pop(tag, None)
                 continue
-            dx, dy = x - box[0], y - box[1]
-            if abs(dx) < 0.5 and abs(dy) < 0.5:
+            dx = tx - box[0]
+            dy = ty - box[1]
+            if abs(dx) <= self.EPS and abs(dy) <= self.EPS:
+                self._targets.pop(tag, None)
                 continue
-            moves.append((tag, dx, dy))
+            remaining += 1
+            try:
+                self.canvas.move(tag, dx * self.FOLLOW, dy * self.FOLLOW)
+            except tk.TclError:
+                self._targets.pop(tag, None)
 
-        if not moves:
-            if done is not None:
-                done()
-            return
-
-        start = time.monotonic()
-        span = max(1, int(duration)) / 1000.0
-        state = {"done": 0.0}
-
-        def step():
-            elapsed = time.monotonic() - start
-            t = min(1.0, elapsed / span)
-            target = ease_out(t)
-            delta = target - state["done"]
-            state["done"] = target
-            for tag, dx, dy in moves:
-                try:
-                    self.canvas.move(tag, dx * delta, dy * delta)
-                except tk.TclError:
-                    continue
-            if t < 1.0:
-                try:
-                    self._job = self.root.after(FRAME_MS, step)
-                except tk.TclError:
-                    self._job = None
-            else:
+        if self._targets and remaining:
+            try:
+                self._job = self.root.after(FRAME_MS, self._step)
+            except tk.TclError:
                 self._job = None
-                if done is not None:
-                    done()
+        else:
+            self._finish()
 
-        try:
-            self._job = self.root.after(FRAME_MS, step)
-        except tk.TclError:
-            self._job = None
-            if done is not None:
-                done()
+    def _finish(self):
+        self._targets.clear()
+        cb = getattr(self, "_pending_done", None)
+        self._pending_done = None
+        if cb is not None:
+            cb()
 
 
 # ---------------- 幽灵 ----------------

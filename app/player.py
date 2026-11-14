@@ -151,6 +151,16 @@ class Player:
             return None
         return axis.nodes[self.index + 1]
 
+    @property
+    def view_index(self):
+        """当前该高亮的序号：分支里是分支自己的下标，主线上是主轴下标。"""
+        if self.route is not None:
+            return self.route["index"]
+        return self.index
+
+    def view_total(self):
+        return len(self.nodes_of_segment())
+
     def nodes_of_segment(self):
         if self.route is not None:
             return list(self.route["nodes"])

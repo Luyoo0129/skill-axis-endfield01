@@ -276,9 +276,8 @@ class Editor:
         self.timeline.configure(yscrollcommand=self.tl_scroll.set)
         self.timeline.pack(side="left", fill="both", expand=True)
         self.tl_scroll.pack(side="right", fill="y")
-        self.timeline.bind("<MouseWheel>",
-                           lambda e: self.timeline.yview_scroll(
-                               int(-e.delta / 120), "units"))
+        self.timeline.bind("<MouseWheel>", self._timeline_wheel)
+        self.timeline.bind("<Configure>", lambda e: self._clamp_timeline_scroll())
         # 注意：不要在这里绑「点空白收起分支」——它会先于松手执行，
         # 导致点菱形时先收起再展开，永远关不上。开合只由菱形自己切换。
 
@@ -954,6 +953,32 @@ class Editor:
         except tk.TclError:
             pass
 
+    def _clamp_timeline_scroll(self):
+        """窗口尺寸变化时把滚动区域收紧，别留可上滑的空白。"""
+        cv = self.timeline
+        content = getattr(self, "_timeline_content_h", 0) or 0
+        try:
+            width = float(str(cv.cget("scrollregion")).split()[2])
+        except (ValueError, IndexError, tk.TclError):
+            width = cv.winfo_width()
+        visible = max(content, cv.winfo_height())
+        cv.configure(scrollregion=(0, 0, width, visible))
+        if content <= cv.winfo_height():
+            cv.yview_moveto(0)
+
+    def _timeline_wheel(self, e):
+        cv = self.timeline
+        try:
+            region = [float(x) for x in str(cv.cget("scrollregion")).split()]
+        except (ValueError, tk.TclError):
+            region = []
+        # 内容没占满可视高度：不允许滚（避免把空白的上面滑出来）
+        if len(region) == 4 and region[3] <= cv.winfo_height() + 2:
+            cv.yview_moveto(0)
+            return "break"
+        cv.yview_scroll(int(-e.delta / 120), "units")
+        return "break"
+
     def refresh_timeline(self):
         cv = self.timeline
         self._anim_timeline.cancel()
@@ -1022,10 +1047,15 @@ class Editor:
                            fill=theme.TEXT_MUTED, font=theme.font(theme.F_TINY))
             height = branch_y + 34
 
+        self._timeline_content_h = height
+        visible_h = max(height, cv.winfo_height())
         cv.configure(height=height,
-                     scrollregion=(0, 0, width, height))
-        if expanded:
-            cv.yview_moveto(0)      # 保持主线在上，分支往下滚着看
+                     scrollregion=(0, 0, width, visible_h))
+        # 内容没超过可视高度就强制回到顶部，不留可上滑的空白
+        if height <= visible_h:
+            cv.yview_moveto(0)
+        elif expanded:
+            cv.yview_moveto(0)      # 展开分支时保持主线在上
         self.tl_title.configure(text="技能轴 · %s" % axis.name, fg=color)
         self._sync_repeat_controls(axis)
 
@@ -1260,9 +1290,18 @@ class Editor:
             return "分支"
         return self._form_label(node.operator, node.kind, getattr(node, "stage", 1))
 
+    def _axis_ends_with_branch(self, axis):
+        return bool(axis and axis.nodes and
+                    getattr(axis.nodes[-1], "kind", "") == KIND_BRANCH)
+
     def add_node(self, operator, kind, index=None, stage=1):
         axis = self.current_axis()
         if not axis or not operator:
+            return
+        # 结尾是分支点时再加技能不会触发（顺走也走不到），直接拒绝
+        if (index is None or index >= len(axis.nodes)) and \
+                self._axis_ends_with_branch(axis):
+            self.refresh_timeline()
             return
         file = self.icons.icon_for(operator, kind, stage) or ""
         node = Node(operator=operator, kind=kind, icon=file, stage=stage)
@@ -1292,9 +1331,11 @@ class Editor:
         self.refresh_timeline()
 
     def add_branch_node(self):
-        """在主线末尾加一个分支点，双击它配置分支。"""
+        """在主线末尾加一个分支点；结尾已经是分支就不再加。"""
         axis = self.current_axis()
         if not axis:
+            return
+        if self._axis_ends_with_branch(axis):
             return
         team = [m for m in self.current_team().normalized() if m]
         node = Node(kind=KIND_BRANCH, options=[{
@@ -1527,6 +1568,8 @@ class Editor:
         return ("main", max(0, min(idx, total)))
 
     def _branch_insert(self, oi, gap, operator, kind, stage=1):
+        if kind == KIND_BRANCH:
+            return                       # 分支里不能插入分支
         opts = self._branch_option_list()
         if not (0 <= oi < len(opts)):
             return
@@ -1537,6 +1580,26 @@ class Editor:
         nodes.insert(gap, node)
         opts[oi]["nodes"] = nodes
         self._after_branch_edit()
+
+    def _branch_take(self, oi, ni):
+        """从分支里摘下一个节点（返回它，没找到返回 None）。"""
+        opts = self._branch_option_list()
+        if not (0 <= oi < len(opts)):
+            return None
+        nodes = list(opts[oi].get("nodes") or [])
+        if not (0 <= ni < len(nodes)):
+            return None
+        node = nodes.pop(ni)
+        opts[oi]["nodes"] = nodes
+        return node
+
+    def _main_take(self, node):
+        """从主轴摘下节点。"""
+        axis = self.current_axis()
+        if axis is None or node not in axis.nodes:
+            return False
+        axis.nodes.remove(node)
+        return True
 
     def _branch_move(self, oi, ni, target):
         opts = self._branch_option_list()
@@ -1550,6 +1613,17 @@ class Editor:
             nodes.pop(ni)                       # 拖到窗口外 = 删除
             opts[oi]["nodes"] = nodes
             self._after_branch_edit()
+            return
+        if isinstance(target, int):          # 分支 -> 主轴
+            axis = self.current_axis()
+            gap = max(0, min(target, len(axis.nodes)))
+            if gap >= len(axis.nodes) and self._axis_ends_with_branch(axis):
+                self._after_branch_edit()    # 不往分支结尾后面塞
+                return
+            if self._branch_take(oi, ni) is not None:
+                axis.nodes.insert(gap, node)
+                self.store.save_axes()
+                self._after_branch_edit()
             return
         kind, toi, gap = target
         if kind != "branch":
@@ -1639,10 +1713,10 @@ class Editor:
             return
 
         if kind == "branchmove":
-            target = drop if isinstance(drop, tuple) else None
             if not moved:
                 return
-            self._branch_move(drag["opt"], drag["idx"], target)
+            # drop 可能是分支里的 (branch, oi, gap)、主轴的 int，或 None(拖出)
+            self._branch_move(drag["opt"], drag["idx"], drop)
             return
 
         if not moved:
@@ -1667,10 +1741,18 @@ class Editor:
                 self.refresh_timeline()
         elif kind == "move":
             node = drag.get("node")
-            if not isinstance(drop, int):
-                self._remove_node(node)
-            else:
+            if isinstance(drop, tuple) and drop[0] == "branch":
+                # 主轴 -> 分支行（分支点本身不能塞进分支）
+                if getattr(node, "kind", "") == KIND_BRANCH:
+                    self.refresh_timeline()
+                    return
+                if self._main_take(node):
+                    self._branch_insert(drop[1], drop[2], node.operator,
+                                        node.kind, getattr(node, "stage", 1))
+            elif isinstance(drop, int):
                 self._move_node(node, drop)
+            else:
+                self._remove_node(node)
 
     def _end_drag(self):
         self._drag = None
@@ -1731,6 +1813,9 @@ class Editor:
         if idx > old:
             idx -= 1
         idx = max(0, min(idx, len(axis.nodes)))
+        if idx >= len(axis.nodes) and self._axis_ends_with_branch(axis):
+            self.refresh_timeline()      # 不往分支点后面塞
+            return
         axis.nodes.insert(idx, node)
         self.store.save_axes()
         self.refresh_timeline()

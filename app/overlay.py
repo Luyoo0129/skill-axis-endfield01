@@ -156,7 +156,7 @@ class Overlay:
         min_w = max(MIN_W, int(round(MIN_W * self.scale)))
 
         p = self.app.player
-        idx = max(0, min(p.index, len(widths) - 1))
+        idx = max(0, min(p.view_index, len(widths) - 1))
         start, visible = self._fit_window(widths, idx, ic, gap, pad, max_w)
         content_w = pad * 2 + sum(widths[start:start + visible]) + \
             gap * max(0, visible - 1)
@@ -760,7 +760,7 @@ class Overlay:
                    theme.F_TINY, theme.ACCENT, anchor="lm", bold=True)
 
         # 进度（只读，不改播放器状态）
-        idx = max(0, min(p.index, max(0, len(nodes) - 1)))
+        idx = max(0, min(p.view_index, max(0, len(nodes) - 1)))
         prog = "%d / %d" % (idx + 1, len(nodes)) if nodes else "0 / 0"
         self._text(d, sl_x1 - 34 * s, ymid, prog, theme.F_TINY,
                    theme.TEXT_MUTED, anchor="rm")
@@ -804,7 +804,7 @@ class Overlay:
             return
 
         p = self.app.player
-        idx = max(0, min(p.index, len(nodes) - 1))
+        idx = max(0, min(p.view_index, len(nodes) - 1))
         shown = nodes[start:start + visible]
         shown_w = widths[start:start + visible]
 
