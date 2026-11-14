@@ -2,11 +2,13 @@
 """编辑器：左侧编队播放顺序 / 中间队伍 + 技能 + 技能轴。"""
 import copy
 import json
+import os
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from . import dragfx, forms, theme
+from .brand import APP_SUB, APP_TITLE, icon_png
 from .keys import vk_label
 from .menu import NiceMenu
 from .model import (KIND_BRANCH, KIND_CN, KIND_COMBO, KIND_SKILL, KINDS, KIND_ULT,
@@ -97,16 +99,59 @@ class Editor:
         self._build_left()
         self._build_center()
 
+    def _resize_brand(self, avail):
+        """图标/字号随左上角高度自适应（保持图标原比例，不拉伸）。"""
+        try:
+            win_w = int(self.root.winfo_width())
+        except tk.TclError:
+            win_w = 1200
+        # 跟窗口宽度走：窄窗小一点、宽窗大一点，但不超出标题行
+        h = int(max(22, min(34, win_w / 48.0)))
+        if avail:
+            h = min(h, max(20, int(avail)))
+        if abs(h - getattr(self, "_brand_h", 0)) < 1 and self._brand_photo:
+            return
+        self._brand_h = h
+        path = icon_png()
+        try:
+            from PIL import Image, ImageTk
+            im = Image.open(path).convert("RGBA")
+            im.thumbnail((h * 3, h * 3), Image.LANCZOS)   # 3x 供高 DPI
+            photo = ImageTk.PhotoImage(im.resize((h, h), Image.LANCZOS))
+            self._brand_photo = photo
+            self.brand_icon.configure(image=photo, width=h, height=h)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.brand_name.configure(font=theme.font(max(11, int(h * 0.52)), True))
+        except tk.TclError:
+            pass
+
     def _build_header(self):
         head = tk.Frame(self.root, bg=theme.BG_2)
         head.pack(fill="x")
 
         title = tk.Frame(head, bg=theme.BG_2)
-        title.pack(side="left", padx=20, pady=(12, 12))
-        tk.Label(title, text="技能轴提示器", bg=theme.BG_2, fg=theme.TEXT,
-                 font=theme.font(theme.F_TITLE, True)).pack(anchor="w")
-        tk.Label(title, text="明日方舟：终末地 · 编队编排", bg=theme.BG_2,
-                 fg=theme.TEXT_MUTED, font=theme.font(theme.F_TINY)).pack(anchor="w")
+        title.pack(side="left", padx=20, pady=(10, 10))
+
+        # 左上角：图标 + 软件名（图标按行高自适应，保持原比例不拉伸）
+        brand = tk.Frame(title, bg=theme.BG_2)
+        brand.pack(anchor="w")
+        self.brand_icon = tk.Label(brand, bg=theme.BG_2, bd=0,
+                                   highlightthickness=0)
+        self.brand_icon.pack(side="left", padx=(0, 10))
+        self.brand_name = tk.Label(brand, text=APP_TITLE, bg=theme.BG_2,
+                                   fg=theme.TEXT, font=theme.font(theme.F_TITLE, True))
+        self.brand_name.pack(side="left")
+        tk.Label(title, text=APP_SUB, bg=theme.BG_2,
+                 fg=theme.TEXT_MUTED, font=theme.font(theme.F_TINY)).pack(anchor="w",
+                                                                        pady=(2, 0))
+        self._brand_photo = None
+        self._brand_h = 0
+        brand.bind("<Configure>", lambda e: self._resize_brand(e.height))
+        self.root.bind("<Configure>", lambda e: self._resize_brand(title.winfo_height() - 14),
+                       add="+")
+        self.root.after(30, lambda: self._resize_brand(title.winfo_height() - 14))
 
         right = tk.Frame(head, bg=theme.BG_2)
         right.pack(side="right", padx=18, pady=16)

@@ -4,7 +4,7 @@
 用法：
     python tools/build_package.py
 产出：
-    dist/技能轴提示器/    —— 直接压缩发人
+    dist/大祥老师的终末地助手/    —— 直接压缩发人
 """
 import os
 import shutil
@@ -14,7 +14,7 @@ import sys
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIBS = os.path.join(BASE, "_buildtmp", "libs")
 DIST = os.path.join(BASE, "dist")
-APP_NAME = "技能轴提示器"
+APP_NAME = "大祥老师的终末地助手"
 OUT_DIR = os.path.join(DIST, APP_NAME)
 
 sys.path.insert(0, LIBS)
@@ -45,6 +45,7 @@ def main():
         "--noconfirm", "--clean",
         "--windowed",
         "--name", APP_NAME,
+        "--icon", os.path.join(BASE, "assets", "app_icon.ico"),
         "--distpath", DIST,
         "--workpath", os.path.join(BASE, "_buildtmp", "work"),
         "--specpath", os.path.join(BASE, "_buildtmp"),
@@ -67,7 +68,7 @@ def main():
         print("打包失败，返回码", rc)
         return rc
 
-    # onedir 产物在 dist/技能轴提示器/技能轴提示器.exe
+    # onedir 产物在 dist/大祥老师的终末地助手/大祥老师的终末地助手.exe
     exe = os.path.join(OUT_DIR, APP_NAME + ".exe")
     if not os.path.exists(exe):
         # PyInstaller 6 会把内容再套一层
@@ -76,8 +77,8 @@ def main():
             exe = alt
     print("exe:", exe, "exists:", os.path.exists(exe))
 
-    # 把 data/ 和说明拷到 exe 旁边
-    for name in ("data",):
+    # 把 data/、assets/（软件图标）和说明拷到 exe 旁边
+    for name in ("data", "assets"):
         src = os.path.join(BASE, name)
         dst = os.path.join(OUT_DIR, name)
         if os.path.isdir(src):

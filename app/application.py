@@ -8,6 +8,7 @@ import time
 import tkinter as tk
 
 from . import fonts, paths, theme
+from .brand import APP_TITLE, icon_png
 from .editor import Editor
 from .gamepad import GamepadListener, button_name
 from .icons import IconStore
@@ -31,7 +32,7 @@ class Application:
     def __init__(self):
         self.root = tk.Tk()
         fonts.setup()
-        self.root.title("技能轴提示器 · 明日方舟：终末地")
+        self.root.title("%s · 明日方舟：终末地" % APP_TITLE)
         self.root.geometry("1320x880")
         self.root.minsize(1180, 780)
         self.root.configure(bg=theme.BG)
@@ -66,6 +67,13 @@ class Application:
         self._pad_bind_cb = None
         self._hold_start = {}       # 数字键按下时刻，用于长按判定
         self.pad_rules = PadRules(self.settings)   # 手柄组合键判定（含终结技风格）
+
+        try:
+            photo = tk.PhotoImage(file=icon_png())
+            self.root.iconphoto(True, photo)
+            self._icon_photo = photo
+        except Exception:  # noqa: BLE001
+            pass
 
         self.editor = Editor(self)
 
