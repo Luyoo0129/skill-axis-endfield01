@@ -221,7 +221,8 @@ class Editor:
         self._team_drag = None
         for ev, fn in (("<ButtonPress-1>", self._team_press),
                        ("<B1-Motion>", self._team_drag_move),
-                       ("<ButtonRelease-1>", self._team_release)):
+                       ("<ButtonRelease-1>", self._team_release),
+                       ("<Double-Button-1>", self._team_double)):
             self.team_canvas.bind(ev, fn)
 
         skill_wrap = tk.Frame(c, bg=theme.PANEL, padx=14, pady=12)
@@ -594,9 +595,15 @@ class Editor:
                                font=theme.font(theme.F_TINY), tags=(tag,))
             cv.tag_bind(tag, "<Button-1>",
                         lambda e, idx=i: self._on_slot_select(idx))
-            cv.tag_bind(tag, "<Double-Button-1>",
-                        lambda e, idx=i: self._on_slot_change(idx))
             x += TEAM_CARD_W + 10
+
+    def _team_double(self, e):
+        """双击换人。用坐标算位置：refresh_team 会重建 item，按 item 绑定会失手。"""
+        idx = self._team_index_at(e.x, e.y)
+        if idx is None:
+            return
+        self._team_drag = None
+        self._on_slot_change(idx)
 
     def _on_slot_select(self, idx):
         cn = self.current_team().normalized()[idx]
