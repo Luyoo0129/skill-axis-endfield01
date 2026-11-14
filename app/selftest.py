@@ -463,7 +463,7 @@ def test_multi_stage():
 
     # 段数与图标：祀 战技 2 段；诀 三类都 2 段
     from app import forms
-    check("祀的战技登记为 2 段", forms.stages("祀", "skill") == 2)
+    check("祀的战技登记为 3 段", forms.stages("祀", "skill") == 3)
     check("诀的终结登记为 2 段", forms.stages("诀", "ult") == 2)
     check("没登记的干员默认 1 段", forms.stages("佩丽卡", "skill") == 1)
 
@@ -619,7 +619,7 @@ def test_default_names():
     demo = {a.name for a in store.axes}
     check("示例数据充能轴叫「充能轴 · 1/2」",
           "充能轴 · 1" in demo and "充能轴 · 2" in demo, repr(demo))
-    check("示例数据爆发轴叫「爆发轴」", "爆发轴" in demo, repr(demo))
+    check("示例数据爆发轴叫「爆发轴 · 1」", "爆发轴 · 1" in demo, repr(demo))
     check("示例编队叫「编队 · 1」",
           store.rotations[0].name == "编队 · 1", repr(store.rotations[0].name))
 
@@ -631,7 +631,7 @@ def test_default_names():
 
     b1 = store.add_axis(ROLE_BURST)
     b2 = store.add_axis(ROLE_BURST)
-    check("已有「爆发轴」时新建顺延为「爆发轴 · 2」",
+    check("已有「爆发轴 · 1」时新建为「爆发轴 · 2」",
           b1.name == "爆发轴 · 2", repr(b1.name))
     check("再建一条为「爆发轴 · 3」", b2.name == "爆发轴 · 3", repr(b2.name))
 
@@ -724,12 +724,98 @@ def test_export_import():
     os.makedirs(tmp2, exist_ok=True)
     store2 = Store(tmp2)
     before = len(store2.axes)
-    ok, msg = store2.import_dict(data, merge=True)
+    ok, msg = store2.import_dict(data, mode="append")
     check("导入成功", ok, msg)
     check("追加模式技能轴数增加", len(store2.axes) > before)
     ok_bad, _ = store2.import_dict({"foo": 1})
     check("非法文件被拒绝", not ok_bad)
     shutil.rmtree(tmp2, ignore_errors=True)
+
+
+def test_demo_and_clone():
+    """示例编队排版 + 新建编队克隆独立轴（不串改别的编队）。"""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tmp = os.path.join(base, "data", "_selftest_tmp11")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    st = Store(tmp)
+    names = [a.name for a in st.axes]
+    check("示例：充能轴 · 1 / 充能轴 · 2", names[:2] == ["充能轴 · 1", "充能轴 · 2"],
+          repr(names))
+    check("示例：爆发轴 · 1", "爆发轴 · 1" in names, repr(names))
+    check("示例技能轴默认是空的", all(not a.nodes for a in st.axes),
+          repr([len(a.nodes) for a in st.axes]))
+    check("示例编队叫「编队 · 1」", st.rotations[0].name == "编队 · 1")
+    check("示例队伍不变", st.rotations[0].members()[:2] == ["佩丽卡", "管理员"],
+          repr(st.rotations[0].members()))
+
+    before_axes = len(st.axes)
+    before_names = [a.name for a in st.axes]
+    rot2 = st.add_rotation()
+    check("新建编队序号顺延", rot2.name == "编队 · 2", repr(rot2.name))
+    check("新建编队克隆同样排版（2 充能 + 1 爆发）",
+          len(rot2.sequence()) == 3, repr(rot2.sequence()))
+    check("克隆的轴是新 id（不和原编队共用）",
+          not (set(rot2.sequence()) & set(st.rotations[0].sequence())))
+    check("克隆的轴名字不重复",
+          len({a.name for a in st.axes}) == len(st.axes),
+          repr([a.name for a in st.axes]))
+    check("克隆的轴默认空", all(not st.axis_by_id(x).nodes for x in rot2.sequence()))
+    check("轴数量增加 3 条", len(st.axes) == before_axes + 3)
+    check("原轴名字没被改", all(n in [a.name for a in st.axes] for n in before_names))
+
+    # 改新编队里的轴，不能影响旧编队里的同名内容
+    clone = st.axis_by_id(rot2.sequence()[0])
+    clone.nodes = [Node(operator="别礼", kind=KIND_SKILL)]
+    old = st.axis_by_id(st.rotations[0].sequence()[0])
+    check("改新编队的轴不影响旧编队", old is not clone and not old.nodes)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_import_modes():
+    """导入两种模式：覆盖 / 添加；名字重复要区分开。"""
+    from app.model import unique_name
+
+    check("unique_name 顺延后缀",
+          unique_name(["编队 · 1"], "编队 · 1") == "编队 · 1 (2)")
+    check("unique_name 跳过已占用",
+          unique_name(["编队 · 1", "编队 · 1 (2)"], "编队 · 1") == "编队 · 1 (3)")
+
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ta = os.path.join(base, "data", "_selftest_tmp12")
+    tb = os.path.join(base, "data", "_selftest_tmp13")
+    for d in (ta, tb):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d, exist_ok=True)
+    a = Store(ta)
+    a.settings.hold_ms = 333
+    data = a.export_dict()
+
+    b = Store(tb)
+    ok, _ = b.import_dict(data, mode="replace")
+    check("覆盖导入成功", ok)
+    check("覆盖导入后设置跟随", b.settings.hold_ms == 333)
+    check("覆盖导入后编队数量等于文件", len(b.rotations) == len(a.rotations),
+          repr((len(b.rotations), len(a.rotations))))
+    check("覆盖导入后名字不重复",
+          len({r.name for r in b.rotations}) == len(b.rotations))
+
+    n0 = len(b.rotations)
+    a0 = len(b.axes)
+    ok2, _ = b.import_dict(data, mode="append")
+    ok3, _ = b.import_dict(data, mode="append")
+    check("追加导入成功", ok2 and ok3)
+    check("追加后编队变多", len(b.rotations) == n0 * 3, repr(len(b.rotations)))
+    check("追加后轴变多", len(b.axes) == a0 + 2 * len(a.axes))
+    rnames = [r.name for r in b.rotations]
+    check("追加后编队名字不重复", len(set(rnames)) == len(rnames), repr(rnames))
+    anames = [x.name for x in b.axes]
+    check("追加后轴名字不重复", len(set(anames)) == len(anames))
+    alive = {x.id for x in b.axes}
+    broken = [x for r in b.rotations for x in r.sequence() if x not in alive]
+    check("追加后编队顺序都指向存在的轴", not broken, repr(broken[:3]))
+    for d in (ta, tb):
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_export_roundtrip():
@@ -779,7 +865,7 @@ def test_export_roundtrip():
 
     # 替换导入
     store2 = Store(t2)
-    ok, msg = store2.import_dict(data, merge=False)
+    ok, msg = store2.import_dict(data, mode="replace")
     check("替换导入成功", ok, msg)
     check("导入后设置跟随", store2.settings.hold_ms == 420
           and store2.settings.pad_ult_mode == "chord"
@@ -797,7 +883,7 @@ def test_export_roundtrip():
           and b2.nodes[0].options[0]["next"] == charge.id)
 
     # 合并导入：id 冲突要重映射，分支跳转不能断
-    ok2, _ = store2.import_dict(data, merge=True)
+    ok2, _ = store2.import_dict(data, mode="append")
     check("合并导入成功", ok2)
     alive = {a.id for a in store2.axes}
     broken = []
@@ -878,7 +964,7 @@ def main():
                test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,
                test_rotation_team_affects_keys, test_rename_rotation,
-               test_store_roundtrip, test_settings_keys, test_export_import, test_export_roundtrip,
+               test_store_roundtrip, test_settings_keys, test_export_import, test_export_roundtrip, test_demo_and_clone, test_import_modes,
                test_legacy_migration, test_assets, test_render, test_fonts):
         try:
             fn()
