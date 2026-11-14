@@ -1,0 +1,31 @@
+# 依赖与产物
+__pycache__/
+*.pyc
+_buildtmp/
+dist/
+build/
+*.spec
+
+# 运行期数据（每个人的编队/设置都不同，不共享）
+data/axes.json
+data/rotations.json
+data/team.json
+data/settings.json
+
+# 游戏素材：版权归鹰角，不入库；用 tools/fetch_*.py 自行下载
+data/icons/
+data/portraits/
+
+# 本地截图/预览（含游戏素材，也很大）
+shots/
+preview/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 本地产物与临时脚本（不属于项目源码）
+github_upload/
+_*.py
+交接摘要.md
