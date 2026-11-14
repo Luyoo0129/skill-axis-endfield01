@@ -157,6 +157,7 @@ class Application:
             if phase == "down":
                 cb, self._pad_bind_cb = self._pad_bind_cb, None
                 cb(bit)
+                self.pad_rules.reset()      # 绑定时不参与判定，别留半截状态
             return
 
         if not self.gamepad.enabled:
@@ -360,6 +361,7 @@ class Application:
         self.gamepad.enabled = enabled
         if enabled and not self.gamepad._thread:
             self.gamepad.start()
+        self.pad_rules.reset()
 
     # ================= 面板 =================
     def open_test_panel(self):
