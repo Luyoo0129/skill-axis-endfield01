@@ -67,7 +67,7 @@ app/
   application.py        装配层：监听、手柄、播放器、编辑器、自动保存、提权
   overlay.py            悬浮窗（长条流水线，Pillow 合成 + 逐像素贴图）
   layeredwin.py         UpdateLayeredWindow 封装
-  editor.py             编辑器：播放顺序 / 队伍 / 技能 / 技能轴
+  editor.py             编辑器：技能轴顺序 / 队伍 / 技能 / 技能轴
   model.py              数据模型与存储（Axis / Rotation / Team / Settings）
   player.py             播放状态机
   iconart.py            图标合成（技能 / 连携 / 终结三种样式）

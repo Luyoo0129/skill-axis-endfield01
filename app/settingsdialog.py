@@ -86,18 +86,10 @@ class SettingsDialog:
                         font=theme.font(theme.F_SMALL))
         sp.pack(side="left", ipady=2)
         sp.bind("<KeyRelease>", lambda e: self._on_hold())
-        tk.Label(row2, text="毫秒（默认 280）", bg=theme.PANEL, fg=theme.TEXT_MUTED,
-                 font=theme.font(theme.F_TINY)).pack(side="left", padx=(8, 0))
 
         # ---- 手柄（照游戏内规则）----
         box3 = self._card(body, "手柄", self._pad_rule_text())
 
-        # 手柄按键是固定默认（照游戏内规则），这里只展示、不给改
-        fixed = tk.Frame(box3, bg=theme.PANEL)
-        fixed.pack(fill="x", padx=8, pady=(2, 4))
-        tk.Label(fixed, text=self._pad_fixed_text(), bg=theme.PANEL,
-                 fg=theme.TEXT_MUTED, font=theme.font(theme.F_TINY),
-                 anchor="w", justify="left").pack(fill="x")
 
         # ---- 终结技触发风格（要跟游戏内设置选的那一种对齐）----
         tk.Frame(box3, bg=theme.BORDER, height=1).pack(fill="x", padx=8, pady=(8, 4))
@@ -117,15 +109,7 @@ class SettingsDialog:
                 highlightthickness=0, anchor="w",
                 font=theme.font(theme.F_SMALL)).pack(side="left", padx=(6, 0))
 
-        self.ult_note = tk.Label(
-            box3, text=self._ult_note_text(), bg=theme.PANEL, fg=theme.TEXT_MUTED,
-            font=theme.font(theme.F_TINY), anchor="w", justify="left")
-        self.ult_note.pack(fill="x", padx=16, pady=(2, 2))
 
-        self.hint = tk.Label(body, text="点按钮后按下对应的键即可重新绑定",
-                             bg=theme.BG, fg=theme.TEXT_MUTED,
-                             font=theme.font(theme.F_TINY), anchor="w")
-        self.hint.pack(fill="x", pady=(6, 0))
 
         # ---- 底部 ----
         foot = tk.Frame(self.win, bg=theme.BG, padx=20, pady=14)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""编辑器：左侧编队播放顺序 / 中间队伍 + 技能 + 技能轴。"""
+"""编辑器：左侧技能轴顺序 / 中间队伍 + 技能 + 技能轴。"""
 import copy
 import json
 import os
@@ -228,7 +228,7 @@ class Editor:
 
         head = tk.Frame(wrap, bg=theme.BG)
         head.pack(fill="x", pady=(10, 4))
-        tk.Label(head, text="播放顺序", bg=theme.BG, fg=theme.TEXT_DIM,
+        tk.Label(head, text="技能轴顺序", bg=theme.BG, fg=theme.TEXT_DIM,
                  font=theme.font(theme.F_TINY)).pack(side="left")
         tk.Label(head, text="双击改名 · 拖动整行排序", bg=theme.BG,
                  fg=theme.TEXT_MUTED, font=theme.font(theme.F_TINY)).pack(side="right")
@@ -501,7 +501,7 @@ class Editor:
             cv.tag_bind("roster_%s" % op, "<Button-1>", lambda e: None)
             x += AVATAR + 8
 
-    # ---------- 播放顺序 ----------
+    # ---------- 技能轴顺序 ----------
     def refresh_order(self):
         cv = self.order_canvas
         self._anim_order.cancel()
@@ -643,8 +643,8 @@ class Editor:
     def new_axis_menu(self):
         """「＋ 新建」：选建充能轴还是爆发轴（自绘菜单）。"""
         NiceMenu(self.root, [
-            ("充能轴", ROLE_CHARGE, "按顺序释放的一组技能"),
-            ("爆发轴", ROLE_BURST, "一波爆发用的一条轴"),
+            ("充能轴", ROLE_CHARGE),
+            ("爆发轴", ROLE_BURST),
         ], lambda role: self.new_axis(role))
 
     def delete_axis(self):

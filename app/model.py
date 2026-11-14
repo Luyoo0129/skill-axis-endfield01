@@ -591,7 +591,20 @@ class Store:
         self._migrate_team()
         self._migrate_orders()
         self._migrate_branches()
+        self._migrate_axis_names()
         self.dirty = False
+
+    def _migrate_axis_names(self):
+        """旧示例里两条轴的名字统一一下（只改这两个旧名，自定义名字不动）。"""
+        rename = {"RB测试": "充能轴", "爆发 · 开场": "爆发轴"}
+        changed = False
+        for axis in self.axes:
+            new = rename.get(axis.name)
+            if new:
+                axis.name = new
+                changed = True
+        if changed:
+            self.save_axes()
 
     def _migrate_orders(self):
         """旧编队只有 charge_axes + burst_axis：合成 order，并同步回旧字段。"""
