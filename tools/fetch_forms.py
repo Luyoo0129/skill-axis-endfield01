@@ -80,15 +80,28 @@ def main():
             entry["file"] = rel
             entry["stage"] = 2
             entry["icon"] = icon_name
-            key = (cn, kind, 2)
-            if not any((x.get("cn"), x.get("kind"), x.get("stage")) == key
-                       for x in manifest):
+            if not any(x.get("cn") == cn and x.get("kind") == kind
+                       and x.get("file") == rel for x in manifest):
                 manifest.append(entry)
                 added += 1
 
-    # 第 1 段条目补 stage=1，方便统一读取
+    # 去重：同一 (干员, 种类, 文件) 只留一条（以前重复跑会追加出重复段）
+    deduped = []
+    seen_files = set()
     for e in manifest:
-        e.setdefault("stage", 1)
+        key = (e.get("cn", ""), e.get("kind", ""), e.get("file", ""))
+        if key in seen_files:
+            continue
+        seen_files.add(key)
+        deduped.append(e)
+    manifest = deduped
+
+    # 同一 (干员, 种类) 的多张图标按出现顺序重新编号 1..N（幂等）
+    counts = {}
+    for e in manifest:
+        key = (e.get("cn", ""), e.get("kind", ""))
+        counts[key] = counts.get(key, 0) + 1
+        e["stage"] = counts[key]
     manifest.sort(key=lambda m: (m.get("cn", ""), m.get("kind", ""),
                                  int(m.get("stage", 1))))
 

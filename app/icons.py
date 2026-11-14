@@ -121,7 +121,7 @@ class IconStore:
 
     # ---------- 干员维度查询 ----------
     def forms_of(self, cn):
-        """{kind: [文件名, ...]} —— 同一技能有多段时会有多个文件（按 index 顺序）。
+        """{kind: [文件名, ...]} —— 同一技能有多段时会有多个文件（按段号排序）。
 
         以前按键名存字典，多段的第二张会把第一张覆盖掉，所以只显示一张。
         """
@@ -131,8 +131,10 @@ class IconStore:
         for entry in self.manifest():
             if entry.get("cn") == cn:
                 kind = entry.get("kind", "custom")
-                out.setdefault(kind, []).append(entry.get("file", ""))
-        return out
+                out.setdefault(kind, []).append(
+                    (int(entry.get("stage") or 1), entry.get("file", "")))
+        return {k: [f for _s, f in sorted(v, key=lambda t: t[0])]
+                for k, v in out.items()}
 
     def skills_of(self, cn):
         """返回 {kind: 第一段的文件名}（兼容旧调用）。"""
