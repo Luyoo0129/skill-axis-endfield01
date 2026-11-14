@@ -1,51 +1,132 @@
 # -*- coding: utf-8 -*-
 """拖拽与动画的共用零件。
 
-编辑器里有三处拖拽（编队行、技能轴节点、队伍卡片），
-以前各自的幽灵、阈值、指示线长得不一样，这里统一成一套：
+三条铁律（之前「乱飞」就是违反了第一条）：
 
-    make_ghost()     —— 跟着鼠标的「幽灵」（文字或头像）
-    insert_line()    —— 松手会插到哪的琥珀色竖线/横线
-    slide()          —— 松手后让卡片/节点滑到新位置的动画
+1. **一个 canvas 同时只允许一条动画**。以前每次 mousemove 都新起一条
+   `after` 循环，旧循环还在按自己的增量推坐标，几条叠加就飞了。
+2. 动画按**绝对目标位置**算位移（用 bbox 取当前位置），重复调用不会累积误差。
+3. 重建 canvas 内容（refresh_*）之前必须先 `cancel()`，否则旧动画会去搬
+   重建出来的同名 tag，看起来就是卡片自己乱跳。
 
-动画都用 root.after 驱动 ease-out，不阻塞主线程；窗口关掉时抛 TclError 就直接放弃。
+对外：`Animator`（move_to / cancel）、`make_ghost`、`set_ghost_alpha`、`DRAG_THRESHOLD`。
 """
 import time
 import tkinter as tk
 
 from . import theme
 
-# 拖动阈值：手抖小于这个距离算「点了一下」，不算拖
+# 拖动阈值：手抖小于这个像素距离算「点了一下」，不算拖
 DRAG_THRESHOLD = 5
 
-# 一次滑动的时长（毫秒）
-SLIDE_MS = 170
+# 让位动画时长（毫秒）与帧间隔
+MOVE_MS = 120
 FRAME_MS = 16
 
 
 def ease_out(t):
-    """ease-out cubic：起步快、收尾稳，看起来像有惯性。"""
+    """ease-out cubic：起步快、收尾稳。"""
     t = 0.0 if t < 0 else (1.0 if t > 1 else t)
     return 1.0 - (1.0 - t) ** 3
 
 
+class Animator:
+    """单个 canvas 的位移动画：同一时间只跑一条，新的会顶掉旧的。"""
+
+    def __init__(self, root, canvas):
+        self.root = root
+        self.canvas = canvas
+        self._job = None
+
+    # ---------- 控制 ----------
+    def cancel(self):
+        if self._job is not None:
+            try:
+                self.root.after_cancel(self._job)
+            except (tk.TclError, ValueError):
+                pass
+            self._job = None
+
+    def busy(self):
+        return self._job is not None
+
+    # ---------- 动画 ----------
+    def move_to(self, targets, duration=MOVE_MS, done=None):
+        """targets: [(tag, x, y)] —— tag 想要到达的左上角坐标（绝对）。
+
+        每次都从「当前实际位置」重新算位移，所以连续调用是收敛的，
+        不会像累加增量那样越跑越远。
+        """
+        self.cancel()
+        moves = []
+        for tag, x, y in targets:
+            try:
+                box = self.canvas.bbox(tag)
+            except tk.TclError:
+                continue
+            if not box:
+                continue
+            dx, dy = x - box[0], y - box[1]
+            if abs(dx) < 0.5 and abs(dy) < 0.5:
+                continue
+            moves.append((tag, dx, dy))
+
+        if not moves:
+            if done is not None:
+                done()
+            return
+
+        start = time.monotonic()
+        span = max(1, int(duration)) / 1000.0
+        state = {"done": 0.0}
+
+        def step():
+            elapsed = time.monotonic() - start
+            t = min(1.0, elapsed / span)
+            target = ease_out(t)
+            delta = target - state["done"]
+            state["done"] = target
+            for tag, dx, dy in moves:
+                try:
+                    self.canvas.move(tag, dx * delta, dy * delta)
+                except tk.TclError:
+                    continue
+            if t < 1.0:
+                try:
+                    self._job = self.root.after(FRAME_MS, step)
+                except tk.TclError:
+                    self._job = None
+            else:
+                self._job = None
+                if done is not None:
+                    done()
+
+        try:
+            self._job = self.root.after(FRAME_MS, step)
+        except tk.TclError:
+            self._job = None
+            if done is not None:
+                done()
+
+
+# ---------------- 幽灵 ----------------
+
 def make_ghost(root, label, image=None):
-    """生成一个跟随鼠标的小幽灵窗口，返回 (toplevel, photo_ref)。"""
+    """跟随鼠标的小幽灵窗口，返回 (toplevel, photo_ref)。"""
     try:
         ghost = tk.Toplevel(root)
         ghost.overrideredirect(True)
         ghost.attributes("-topmost", True)
         ghost.configure(bg=theme.ACCENT)
+        box = tk.Frame(ghost, bg=theme.PANEL_3)
+        box.pack(padx=2, pady=2)
         if image is not None:
-            box = tk.Frame(ghost, bg=theme.PANEL_3)
-            box.pack(padx=2, pady=2)
             tk.Label(box, image=image, bg=theme.PANEL_3, bd=0).pack(padx=6, pady=6)
             tk.Label(box, text=label, bg=theme.PANEL_3, fg=theme.TEXT,
                      font=theme.font(theme.F_TINY)).pack(pady=(0, 4))
         else:
-            tk.Label(ghost, text=label, bg=theme.PANEL_3, fg=theme.TEXT,
-                     font=theme.font(theme.F_SMALL), padx=10, pady=6).pack(padx=2,
-                                                                         pady=2)
+            tk.Label(box, text=label, bg=theme.PANEL_3, fg=theme.TEXT,
+                     font=theme.font(theme.F_SMALL), padx=8, pady=5).pack()
         ghost.geometry("+%d+%d" % (root.winfo_pointerx() + 12,
                                    root.winfo_pointery() + 8))
         return ghost, image
@@ -63,116 +144,18 @@ def move_ghost(ghost, x_root, y_root):
         return False
 
 
-def insert_line(cv, x1, y1, x2, y2, tag="drop_ind"):
-    """插入位置指示线：外圈暗琥珀 + 内芯亮琥珀，比单线更醒目。"""
-    try:
-        cv.create_line(x1, y1, x2, y2, fill=theme.ACCENT_SOFT, width=6,
-                       capstyle="round", tags=(tag,))
-        cv.create_line(x1, y1, x2, y2, fill=theme.ACCENT, width=2,
-                       capstyle="round", tags=(tag,))
-        # 两端小圆点，看起来像「插槽」
-        r = 3
-        for px, py in ((x1, y1), (x2, y2)):
-            cv.create_oval(px - r, py - r, px + r, py + r, fill=theme.ACCENT,
-                           outline="", tags=(tag,))
-    except tk.TclError:
-        pass
-
-
 def set_ghost_alpha(ghost, alpha=0.86):
-    """幽灵半透明，免得它把小一号的插入线整条盖住。"""
+    """幽灵半透明，免得把落点完全挡住。"""
     try:
         ghost.attributes("-alpha", alpha)
     except tk.TclError:
         pass
 
 
-def glide(root, canvas, groups, duration=110, done=None):
-    """从当前位置平滑挪到「当前位置 + (dx, dy)」。
-
-    跟 slide() 的区别：slide 假定画面已在新位置、先把内容挪回去再补回来；
-    glide 直接按增量移动，适合拖动过程中的实时让位。
-    """
-    groups = [g for g in (groups or []) if abs(g[1]) > 0.5 or abs(g[2]) > 0.5]
-    if not groups:
-        if done is not None:
-            done()
+def hide_ghost(ghost):
+    if ghost is None:
         return
-
-    start = time.monotonic()
-    span = max(1, int(duration)) / 1000.0
-    state = {"done": 0.0}
-
-    def step():
-        el = time.monotonic() - start
-        t = min(1.0, el / span)
-        target = ease_out(t)
-        delta = target - state["done"]
-        state["done"] = target
-        for tag, dx, dy in groups:
-            try:
-                canvas.move(tag, dx * delta, dy * delta)
-            except tk.TclError:
-                pass
-        if t < 1.0:
-            try:
-                root.after(FRAME_MS, step)
-            except tk.TclError:
-                pass
-        elif done is not None:
-            done()
-
     try:
-        root.after(FRAME_MS, step)
+        ghost.destroy()
     except tk.TclError:
-        if done is not None:
-            done()
-
-
-def slide(root, canvas, groups, duration=SLIDE_MS, done=None):
-    """让 canvas 上的内容从旧位置滑到当前位置。
-
-    groups: [(tag, dx, dy)]，dx/dy = 旧位置 - 新位置。
-    调用前 canvas 里应该已经按新位置画好了；本函数先把它们挪回旧位置，
-    再缓动补回来，看起来就是「滑过去」。
-    """
-    groups = [g for g in (groups or []) if g[1] or g[2]]
-    if not groups:
-        if done is not None:
-            done()
-        return
-
-    for tag, dx, dy in groups:
-        try:
-            canvas.move(tag, -dx, -dy)
-        except tk.TclError:
-            pass
-
-    start = time.monotonic()
-    span = max(1, int(duration)) / 1000.0
-    state = {"done": 0.0}
-
-    def step():
-        el = time.monotonic() - start
-        t = min(1.0, el / span)
-        target = ease_out(t)
-        delta = target - state["done"]
-        state["done"] = target
-        for tag, dx, dy in groups:
-            try:
-                canvas.move(tag, dx * delta, dy * delta)
-            except tk.TclError:
-                pass
-        if t < 1.0:
-            try:
-                root.after(FRAME_MS, step)
-            except tk.TclError:
-                pass
-        elif done is not None:
-            done()
-
-    try:
-        root.after(FRAME_MS, step)
-    except tk.TclError:
-        if done is not None:
-            done()
+        pass

@@ -199,6 +199,13 @@ class TestPanel:
             self.listbox.delete(59, tk.END)
         self.refresh_status()
 
+    def show_error(self, text):
+        """事件处理异常时显示出来，别再静默。"""
+        try:
+            self.lbl_tip.configure(text="⚠ 事件处理出错：%s" % text, fg=theme.BAD)
+        except tk.TclError:
+            pass
+
     def destroy(self):
         try:
             self.win.destroy()

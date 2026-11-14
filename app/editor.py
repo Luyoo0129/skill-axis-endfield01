@@ -68,6 +68,10 @@ class Editor:
         self._rename_entry = None
 
         self._build()
+        # 每个 canvas 一个动画器：同时只跑一条，避免多条 after 循环叠加把卡片甩飞
+        self._anim_team = dragfx.Animator(self.root, self.team_canvas)
+        self._anim_timeline = dragfx.Animator(self.root, self.timeline)
+        self._anim_order = dragfx.Animator(self.root, self.order_canvas)
         if self.store.axes:
             self.current_axis_id = self.store.axes[0].id
         self.refresh_all()
@@ -412,6 +416,7 @@ class Editor:
     # ---------- 播放顺序 ----------
     def refresh_order(self):
         cv = self.order_canvas
+        self._anim_order.cancel()
         cv.delete("all")
         order = self._order()
         if not order:
@@ -555,6 +560,7 @@ class Editor:
     # ---------- 队伍 ----------
     def refresh_team(self):
         cv = self.team_canvas
+        self._anim_team.cancel()      # 先停动画，免得旧动画去搬重建出来的同名 tag
         cv.delete("all")
         members = self.current_team().normalized()
         if not self.selected_member:
@@ -654,11 +660,13 @@ class Editor:
                          image=self._team_ghost_image(cn))
 
     # ---------- 拖动时的实时让位 ----------
-    def _preview_shift(self, cv, items, from_idx, gap, tag_of, base, step,
-                       vertical=False):
-        """拖动中预演落点：把被拖的那张藏起来，其余整体挪开让出空位。
+    def _preview_shift(self, anim, items, from_idx, gap, tag_of, base, step,
+                       vertical=False, fixed=4):
+        """拖动中预演落点：被拖的那张已隐藏，其余整体挪开让出空位。
 
-        这样看到的是「空位跟着鼠标走」，而不是一条会被幽灵挡住的指示线。
+        targets 给的是**绝对坐标**，Animator 每次从当前位置重算位移，
+        所以连续 mousemove 只会收敛到目标，不会累积漂移。
+        vertical=True 时 fixed 是固定的 x（编队行），否则是固定的 y。
         """
         if not items:
             return
@@ -671,7 +679,22 @@ class Editor:
         if list(preview) == list(items):
             return
 
-        groups = []
+        # 圆角矩形是 smooth 多边形，bbox 比坐标宽出约 2px；
+        # 不扣掉这个固有偏移，每次移动都会多加一次，越拖越偏。
+        offs = self._drag.setdefault("offs", {})
+        if not offs:
+            for i, it in enumerate(items):
+                tag = tag_of(i, it)
+                try:
+                    box = anim.canvas.bbox(tag)
+                except tk.TclError:
+                    continue
+                if not box:
+                    continue
+                axis_val = box[1] if vertical else box[0]
+                offs[tag] = axis_val - (base + i * step)
+
+        targets = []
         for i, it in enumerate(items):
             if i == from_idx:
                 continue
@@ -680,18 +703,32 @@ class Editor:
             except ValueError:
                 continue
             tag = tag_of(i, it)
-            try:
-                box = cv.bbox(tag)
-            except tk.TclError:
+            pos = base + j * step + offs.get(tag, 0)
+            targets.append((tag, fixed, pos) if vertical else (tag, pos, fixed))
+        anim.move_to(targets)
+
+    def _preview_insert(self, anim, count, gap, tag_of, base, step, fixed=18):
+        """新项目要插进来：gap 之后的项目整体后移一格，腾出位置。"""
+        if gap is None:
+            return
+        gap = max(0, min(int(gap), count))
+        offs = self._drag.setdefault("offs", {})
+        if not offs:
+            for i in range(count):
+                tag = tag_of(i)
+                try:
+                    box = anim.canvas.bbox(tag)
+                except tk.TclError:
+                    continue
+                if box:
+                    offs[tag] = box[0] - (base + i * step)
+        targets = []
+        for i in range(count):
+            if i < gap:
                 continue
-            if not box:
-                continue
-            cur = box[1] if vertical else box[0]
-            target = base + j * step
-            d = target - cur
-            if abs(d) >= 1:
-                groups.append((tag, 0, d) if vertical else (tag, d, 0))
-        dragfx.glide(self.root, cv, groups)
+            tag = tag_of(i)
+            targets.append((tag, base + (i + 1) * step + offs.get(tag, 0), fixed))
+        anim.move_to(targets)
 
     def _hide_dragged(self, cv, tag):
         try:
@@ -810,6 +847,7 @@ class Editor:
     # ---------- 技能轴 ----------
     def refresh_timeline(self):
         cv = self.timeline
+        self._anim_timeline.cancel()
         cv.delete("all")
         axis = self.current_axis()
         if not axis:
@@ -936,23 +974,23 @@ class Editor:
             members = self.current_team().normalized()
             self._preview_once("team", self.team_canvas,
                                "tm_%d" % self._drag["from"])
-            self._preview_shift(self.team_canvas, members, self._drag["from"],
+            self._preview_shift(self._anim_team, members, self._drag["from"],
                                 gap, lambda i, _cn: "tm_%d" % i, 2,
-                                TEAM_CARD_W + 10)
+                                TEAM_CARD_W + 10, fixed=4)
         elif kind == "reorder":
             idx = self._order_drop_index(e)
-            charges = list(self.current_rotation().charge_axes) \
-                if self.current_rotation() else []
+            rot = self.current_rotation()
+            charges = list(rot.charge_axes) if rot else []
             if idx is not None:
                 idx = min(idx, len(charges))
             self._pending_drop = idx
             self._preview_once("reorder", self.order_canvas,
                                "row_%s" % self._drag["axis"].id)
-            self._preview_shift(self.order_canvas, charges,
-                                charges.index(self._drag["axis"].id)
-                                if self._drag["axis"].id in charges else 0,
+            axis_id = self._drag["axis"].id
+            self._preview_shift(self._anim_order, charges,
+                                charges.index(axis_id) if axis_id in charges else 0,
                                 idx, lambda i, a_id: "row_%s" % a_id, 2,
-                                AXIS_ROW_H, vertical=True)
+                                AXIS_ROW_H, vertical=True, fixed=2)
         else:
             idx = self._timeline_drop_index(e)
             self._pending_drop = idx
@@ -960,37 +998,17 @@ class Editor:
             nodes = list(axis.nodes) if axis else []
             if self._drag.get("type") == "new":
                 # 从技能栏拖一张新技能进来：只腾位置，没有源节点
-                self._preview_insert(self.timeline, len(nodes), idx,
+                self._preview_insert(self._anim_timeline, len(nodes), idx,
                                      lambda i: "nd_%s" % nodes[i].id, 8,
-                                     NODE_W + NODE_GAP)
+                                     NODE_W + NODE_GAP, fixed=18)
                 return
             node = self._drag.get("node")
             from_idx = nodes.index(node) if node in nodes else 0
-            self._preview_once("move", self.timeline, "nd_%s" % getattr(node, "id", ""))
-            self._preview_shift(self.timeline, nodes, from_idx, idx,
+            self._preview_once("move", self.timeline,
+                               "nd_%s" % getattr(node, "id", ""))
+            self._preview_shift(self._anim_timeline, nodes, from_idx, idx,
                                 lambda i, n: "nd_%s" % n.id, 8,
-                                NODE_W + NODE_GAP)
-
-    def _preview_insert(self, cv, count, gap, tag_of, base, step):
-        """新项目要插进来：把 gap 之后的项目整体右移一格，腾出空位。"""
-        if gap is None:
-            return
-        gap = max(0, min(int(gap), count))
-        groups = []
-        for i in range(count):
-            if i < gap:
-                continue
-            try:
-                box = cv.bbox(tag_of(i))
-            except tk.TclError:
-                continue
-            if not box:
-                continue
-            target = base + (i + 1) * step
-            d = target - box[0]
-            if abs(d) >= 1:
-                groups.append((tag_of(i), d, 0))
-        dragfx.glide(self.root, cv, groups)
+                                NODE_W + NODE_GAP, fixed=18)
 
     def _preview_once(self, key, cv, tag):
         """被拖的东西只藏一次，免得每帧都去改 canvas。"""
@@ -1129,18 +1147,13 @@ class Editor:
         charges.insert(idx, axis.id)
         rot.charge_axes = charges
         self.store.save_rotations()
-        self.refresh_order()
+        self.refresh_order()          # 拖动时已经滑到位，这里重画即可，别再叠加动画
         self.app.rebuild_player()
-
-        groups = [("row_%s" % a_id, 0, (before[a_id] - i) * AXIS_ROW_H)
-                  for i, a_id in enumerate(charges) if a_id in before and before[a_id] != i]
-        dragfx.slide(self.root, self.order_canvas, groups)
 
     def _move_node(self, node, idx):
         axis = self.current_axis()
         if not axis or node not in axis.nodes:
             return
-        before = {n.id: i for i, n in enumerate(axis.nodes)}
         old = axis.nodes.index(node)
         axis.nodes.remove(node)
         if idx > old:
@@ -1149,10 +1162,6 @@ class Editor:
         axis.nodes.insert(idx, node)
         self.store.save_axes()
         self.refresh_timeline()
-
-        groups = [("nd_%s" % n.id, (before[n.id] - i) * (NODE_W + NODE_GAP), 0)
-                  for i, n in enumerate(axis.nodes) if n.id in before and before[n.id] != i]
-        dragfx.slide(self.root, self.timeline, groups)
 
     def _remove_node(self, node):
         axis = self.current_axis()

@@ -3,6 +3,7 @@
 import ctypes
 import os
 import queue
+import sys
 import time
 import tkinter as tk
 
@@ -42,6 +43,7 @@ class Application:
         self.store.on_change = self._schedule_save
         self._save_job = None
         self.last_save_time = None          # 最后一次落盘的时刻
+        self.last_error = ""                # 最近一次事件处理异常（排障用）
         # 首次启动：把示例数据立刻落盘
         if not os.path.exists(self.store.axes_path):
             self.store.commit()
@@ -125,16 +127,37 @@ class Application:
         self.events.put(ev)
 
     def _drain(self):
+        # 关键：单个事件处理出错不能带走整个事件循环。
+        # 之前「按错技能」会抛 AttributeError，异常穿出 _drain，
+        # 结尾的 root.after 没被执行 -> 之后按键和 F7 全都没反应，只能重启程序。
         try:
             while True:
                 item = self.events.get_nowait()
-                self._dispatch(item)
+                try:
+                    self._dispatch(item)
+                except Exception as exc:  # noqa: BLE001
+                    self._note_error(exc)
         except queue.Empty:
             pass
+        finally:
+            try:
+                self.root.after(20, self._drain)
+            except tk.TclError:
+                pass
+
+    def _note_error(self, exc):
+        """记下最近一次事件处理异常，界面上能查到，别再静默死掉。"""
+        self.last_error = "%s: %s" % (type(exc).__name__, exc)
         try:
-            self.root.after(20, self._drain)
-        except tk.TclError:
+            print("[event] " + self.last_error, file=sys.stderr)
+        except Exception:  # noqa: BLE001
             pass
+        panel = self.test_panel
+        if panel is not None:
+            try:
+                panel.show_error(self.last_error)
+            except (tk.TclError, AttributeError):
+                self.test_panel = None
 
     def _dispatch(self, item):
         if isinstance(item, tuple):
@@ -272,7 +295,13 @@ class Application:
         elif result == WRONG:
             cur = info[0]
             self.refresh_overlay()
-            self.overlay_show_hint("顺序不对：现在应放「%s」" % (cur.skill or "当前技能"))
+            # Node 没有 skill 字段（以前这里访问 cur.skill 会抛 AttributeError，
+            # 直接把事件循环带走）。用干员名 + 技能种类来提示。
+            try:
+                who = "%s · %s" % (cur.operator or "该干员", cur.label)
+            except AttributeError:
+                who = "当前技能"
+            self.overlay_show_hint("顺序不对：现在应放「%s」" % who)
         elif result == FINISHED:
             pass
 
@@ -328,8 +357,12 @@ class Application:
             self.overlay.redraw()
 
     def overlay_show_hint(self, text):
-        if self.is_overlay_visible():
+        if not self.is_overlay_visible():
+            return
+        try:
             self.overlay.show_hint(text)
+        except Exception as exc:  # noqa: BLE001
+            self._note_error(exc)
 
     def set_overlay_opacity(self, value, persist=True):
         """设置悬浮窗底色的不透明度（只影响背景层，文字不淡）。"""
