@@ -1,25 +1,12 @@
 @echo off
-setlocal
-
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 set "MG=%~dp0.gittools\mingit"
 set "GIT=%MG%\cmd\git.exe"
-
-if not exist "%GIT%" (
-    echo.
-    echo Portable Git not found: %GIT%
-    echo Install Git from https://git-scm.com/download/win and run: git push -u origin main
-    echo.
-    pause
-    exit /b 1
-)
-
-rem GCM lives in ucrt64\bin - must be on PATH so "manager" resolves
 set "PATH=%MG%\ucrt64\bin;%MG%\cmd;%PATH%"
 
-rem make sure the credential helper is usable
-"%GIT%" config --local credential.helper manager >nul 2>&1
+if not exist "%GIT%" goto nogit
 
 echo.
 echo ============================================
@@ -27,41 +14,71 @@ echo  Push skill-axis-endfield to GitHub
 echo ============================================
 echo.
 
-"%GIT%" remote get-url origin >nul 2>&1
-if errorlevel 1 (
-    echo No remote configured.
-    echo Example: https://github.com/YOUR_NAME/skill-axis-endfield.git
-    echo.
-    set /p "URL=Repo URL: "
-    if "!URL!"=="" (
-        echo Cancelled.
-        pause
-        exit /b 1
-    )
-    "%GIT%" remote add origin "!URL!"
-)
+"%GIT%" config --local credential.helper manager >nul 2>&1
 
-echo Remote: 
+"%GIT%" remote get-url origin >nul 2>&1
+if errorlevel 1 goto seturl
+goto push
+
+:seturl
+echo No remote configured yet.
+echo Example URL:
+echo    https://github.com/YOUR_NAME/skill-axis-endfield.git
+echo.
+set /p "URL=Repo URL: "
+if "!URL!"=="" goto cancel
+"%GIT%" remote add origin "!URL!"
+echo Remote added.
+echo.
+
+:push
+echo Remote:
 "%GIT%" remote get-url origin
 echo.
-echo A "Connect to GitHub" window will open. Sign in there.
+echo A "Connect to GitHub" window will open.
+echo Sign in with your browser, then come back here.
 echo.
 "%GIT%" push -u origin main
+if errorlevel 1 goto failed
 
 echo.
-echo ---- Result ----
-if errorlevel 1 (
-    echo Push FAILED. See messages above.
-    echo.
-    echo If it says authentication / could not read Username:
-    echo   use a Personal Access Token as the password.
-    echo   GitHub - Settings - Developer settings - Personal access tokens
-    echo   - Tokens ^(classic^) - Generate new token - check "repo" scope
-    echo.
-    echo Or ask the assistant to push with a token instead.
-) else (
-    echo Push OK. Open your repo page and add your friend as collaborator:
-    echo   Settings - Collaborators - Add people
-)
+echo --------------------------------------------
+echo  Push OK
+echo --------------------------------------------
+echo Next step: add your friend as collaborator
+echo   Repo page - Settings - Collaborators - Add people
+echo.
+goto end
+
+:failed
+echo.
+echo --------------------------------------------
+echo  Push FAILED
+echo --------------------------------------------
+echo If the message mentions authentication or
+echo "could not read Username", use a Personal Access Token as the password:
+echo   GitHub - Settings - Developer settings -
+echo   Personal access tokens - Tokens (classic) -
+echo   Generate new token - check "repo" scope
+echo.
+echo Or ask the assistant to push using a token.
+echo.
+
+:end
 echo.
 pause
+exit /b 0
+
+:nogit
+echo Portable Git not found:
+echo    %GIT%
+echo Install Git from https://git-scm.com/download/win instead.
+echo.
+pause
+exit /b 1
+
+:cancel
+echo Cancelled.
+echo.
+pause
+exit /b 1
