@@ -10,7 +10,7 @@ from . import dragfx, forms, theme
 from .keys import vk_label
 from .model import (KIND_BRANCH, KIND_CN, KIND_COMBO, KIND_SKILL, KINDS, KIND_ULT,
                     ROLE_BURST, ROLE_CHARGE, ROLE_CN, ROLE_ROUTE, Axis, Node, Team,
-                    assign_member, move_item)
+                    assign_member, move_item, next_numbered_name)
 from .opspicker import OperatorPicker
 from .textdialog import ask_text
 from .widgets import rounded_rect
@@ -299,7 +299,7 @@ class Editor:
         return self.store.active_rotation()
 
     def _order(self):
-        """当前编队的播放顺序：充能轴们 + 爆发轴；末尾再接路线轴（只用于编辑）。"""
+        """当前编队的播放顺序：充能轴们 + 爆发轴（爆发轴固定最下层）。"""
         rot = self.current_rotation()
         if not rot:
             return []
@@ -308,8 +308,16 @@ class Editor:
         burst = self.store.axis_by_id(rot.burst_axis)
         if burst is not None:
             out.append(burst)
-        out += [a for a in self.store.axes if getattr(a, "role", "") == ROLE_ROUTE]
         return out
+
+    def _order_charges(self):
+        """播放顺序里可拖动的部分（不含爆发轴）。"""
+        order = self._order()
+        return [a for a in order if a.role != ROLE_BURST]
+
+    def _route_axes(self):
+        """路线轴：不参与播放顺序，单独一块显示。"""
+        return [a for a in self.store.axes if getattr(a, "role", "") == ROLE_ROUTE]
 
     # ---------- 编队 ----------
     def refresh_rotation(self):
@@ -404,10 +412,12 @@ class Editor:
     def new_rotation(self):
         if not self._confirm_unsaved("新建"):
             return
+        default_name = next_numbered_name([r.name for r in self.store.rotations],
+                                         "编队")
         name = ask_text(self.app, "新建编队", "给这个编队起个名字",
-                        "新编队", ok_text="创建")
+                        default_name, ok_text="创建")
         if not name:
-            return
+            name = default_name
         rot = self.store.add_rotation(name)
         self.store.settings.active_rotation = rot.id
         self.store.save_settings()
@@ -442,7 +452,8 @@ class Editor:
         self._anim_order.cancel()
         cv.delete("all")
         order = self._order()
-        if not order:
+        routes = self._route_axes()
+        if not order and not routes:
             cv.create_text(6, 24, anchor="w",
                            text="还没有技能轴，点下面「＋ 新建技能轴」",
                            fill=theme.TEXT_MUTED, font=theme.font(theme.F_SMALL))
@@ -455,6 +466,19 @@ class Editor:
         for idx, axis in enumerate(order):
             self._order_row(cv, axis, idx, y, charge_ids)
             y += AXIS_ROW_H
+
+        if routes:
+            # 路线轴单独一块：跟播放顺序分开，避免有人以为它会按顺序放
+            y += 6
+            cv.create_line(6, y, LEFT_W - 10, y, fill=theme.BORDER)
+            cv.create_text(6, y + 6, anchor="nw", text="路线轴（不参与播放）",
+                           fill=theme.TEXT_MUTED,
+                           font=theme.font(theme.F_TINY))
+            y += 22
+            for idx, axis in enumerate(routes):
+                self._order_row(cv, axis, idx, y, charge_ids)
+                y += AXIS_ROW_H
+
         cv.configure(scrollregion=(0, 0, LEFT_W, y + 8))
 
     def _order_row(self, cv, axis, idx, y, charge_ids):
@@ -570,9 +594,7 @@ class Editor:
 
     def new_route_axis(self):
         """新建一条「路线轴」：不进播放顺序，只给分支点当分支用。"""
-        axis = self.store.add_axis(ROLE_ROUTE)
-        axis.name = "路线 · %s" % axis.name if "路线" not in axis.name else axis.name
-        self.store.save_axes()
+        axis = self.store.add_axis(ROLE_ROUTE)     # 名字自动是「路线 · N」
         self.current_axis_id = axis.id
         self.refresh_all()
 
@@ -1216,7 +1238,8 @@ class Editor:
             return None
         _x, y = pos
         idx = int((y - 2 + AXIS_ROW_H / 2) // AXIS_ROW_H)
-        return max(0, min(idx, len(self._order())))
+        # 只能落在充能轴之间：爆发轴固定在最后，不能拖到它下面
+        return max(0, min(idx, len(self._order_charges())))
 
     def _team_gap_at_global(self, e):
         pos = self._in_canvas(self.team_canvas, e)

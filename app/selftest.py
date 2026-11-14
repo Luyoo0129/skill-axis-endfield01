@@ -7,8 +7,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.model import (Axis, KIND_COMBO, KIND_SKILL, KIND_ULT,  # noqa: E402
-                       Node, ROLE_BURST, ROLE_CHARGE, Rotation, Settings,
-                       Store, Team)
+                       Node, ROLE_BURST, ROLE_CHARGE, ROLE_ROUTE, Rotation,
+                       Settings, Store, Team)
 from app.player import FINISHED, IGNORED, MATCH, WRONG, Player  # noqa: E402
 
 results = []
@@ -554,6 +554,51 @@ def test_branch():
           repr((p3.route, p3.current())))
 
 
+def test_default_names():
+    """默认命名：编队 · N / 充能轴 · N / 路线 · N / 爆发轴（固定）。"""
+    from app.model import next_numbered_name
+
+    check("编号顺延：1、2 -> 3",
+          next_numbered_name(["充能轴 · 1", "充能轴 · 2"], "充能轴") == "充能轴 · 3")
+    check("编号按最大值顺延（不看条数）",
+          next_numbered_name(["充能轴 · 5"], "充能轴") == "充能轴 · 6")
+    check("没有同名时从 1 开始",
+          next_numbered_name(["别的轴"], "充能轴") == "充能轴 · 1")
+    check("不误判前缀相近的名字",
+          next_numbered_name(["充能轴测试"], "充能轴") == "充能轴 · 1")
+
+    tmp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "data", "_selftest_tmp7")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    store = Store(tmp)
+    demo = {a.name for a in store.axes}
+    check("示例数据充能轴叫「充能轴 · 1/2」",
+          "充能轴 · 1" in demo and "充能轴 · 2" in demo, repr(demo))
+    check("示例数据爆发轴叫「爆发轴」", "爆发轴" in demo, repr(demo))
+    check("示例编队叫「编队 · 1」",
+          store.rotations[0].name == "编队 · 1", repr(store.rotations[0].name))
+
+    a1 = store.add_axis(ROLE_CHARGE)
+    a2 = store.add_axis(ROLE_CHARGE)
+    check("新建充能轴依次编号",
+          a1.name == "充能轴 · 3" and a2.name == "充能轴 · 4",
+          repr((a1.name, a2.name)))
+
+    r1 = store.add_axis(ROLE_ROUTE)
+    r2 = store.add_axis(ROLE_ROUTE)
+    check("新建路线轴依次编号",
+          r1.name == "路线 · 1" and r2.name == "路线 · 2",
+          repr((r1.name, r2.name)))
+
+    b = store.add_axis(ROLE_BURST)
+    check("新建爆发轴固定叫「爆发轴」", b.name == "爆发轴", repr(b.name))
+
+    rot = store.add_rotation()
+    check("新建编队依次编号", rot.name == "编队 · 2", repr(rot.name))
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_skip():
     p, rot, axes, s = mk_player(charge_kinds=((KIND_SKILL, KIND_ULT),))
     p.start()
@@ -705,7 +750,8 @@ def main():
                test_combo_key, test_ult_requires_hold, test_hold_threshold_setting,
                test_infinite, test_wrong_key, test_key_map, test_any_mode,
                test_gamepad, test_pad_ult_modes, test_team_unique, test_move_item,
-               test_axis_repeat, test_multi_stage, test_branch, test_skip,
+               test_axis_repeat, test_multi_stage, test_branch, test_default_names,
+               test_skip,
                test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,
                test_rotation_team_affects_keys, test_rename_rotation,

@@ -10,6 +10,7 @@
 """
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 
@@ -71,6 +72,26 @@ def pad_ult_mode_label(mode):
         if val == mode:
             return label
     return PAD_ULT_MODES[0][1]
+
+
+# 新建对象的默认命名规则（用户 2026-11-14 定）：
+#   编队   -> 编队 · 1 / 编队 · 2 …
+#   充能轴 -> 充能轴 · 1 / 充能轴 · 2 …
+#   路线轴 -> 路线 · 1 / 路线 · 2 …
+#   爆发轴 -> 爆发轴（固定，不编号）
+DEFAULT_PREFIX = {ROLE_CHARGE: "充能轴", ROLE_ROUTE: "路线", ROLE_BURST: "爆发轴",
+                  "rotation": "编队"}
+
+
+def next_numbered_name(existing_names, prefix):
+    """按 "前缀 · N" 找下一个可用编号（已有 3 就给 4，删除不影响已用号）。"""
+    pat = re.compile(re.escape(prefix) + r"\s*·\s*(\d+)\s*$")
+    nums = []
+    for name in existing_names:
+        m = pat.match(str(name or "").strip())
+        if m:
+            nums.append(int(m.group(1)))
+    return "%s · %d" % (prefix, (max(nums) + 1) if nums else 1)
 
 
 def new_id():
@@ -419,20 +440,20 @@ class Settings:
 
 def make_demo_data():
     """首次启动的示例：2 个充能轴 + 1 个爆发轴。"""
-    c1 = Axis(name="充能 · 第一轮", role=ROLE_CHARGE, nodes=[
+    c1 = Axis(name="充能轴 · 1", role=ROLE_CHARGE, nodes=[
         Node(operator="佩丽卡", kind=KIND_SKILL, icon="佩丽卡_技能.png"),
         Node(operator="管理员", kind=KIND_COMBO, icon="管理员_连携.png"),
     ])
-    c2 = Axis(name="充能 · 第二轮", role=ROLE_CHARGE, nodes=[
+    c2 = Axis(name="充能轴 · 2", role=ROLE_CHARGE, nodes=[
         Node(operator="陈千语", kind=KIND_SKILL, icon="陈千语_技能.png"),
         Node(operator="佩丽卡", kind=KIND_ULT, icon="佩丽卡_终结.png"),
     ])
-    burst = Axis(name="爆发 · 开场", role=ROLE_BURST, nodes=[
+    burst = Axis(name="爆发轴", role=ROLE_BURST, nodes=[
         Node(operator="余烬", kind=KIND_ULT, icon="余烬_终结.png"),
         Node(operator="佩丽卡", kind=KIND_SKILL, icon="佩丽卡_技能.png"),
         Node(operator="陈千语", kind=KIND_ULT, icon="陈千语_终结.png"),
     ])
-    rot = Rotation(name="示例编队", charge_axes=[c1.id, c2.id], burst_axis=burst.id,
+    rot = Rotation(name="编队 · 1", charge_axes=[c1.id, c2.id], burst_axis=burst.id,
                    team=Team(members=["佩丽卡", "管理员", "陈千语", "余烬"]))
     team = Team(members=["佩丽卡", "管理员", "陈千语", "余烬"])
     return [c1, c2, burst], [rot], team
@@ -590,8 +611,15 @@ class Store:
 
     # ---------- 增删 ----------
     def add_axis(self, role=ROLE_CHARGE, name=None):
-        axis = Axis(name=name or ("新充能轴" if role == ROLE_CHARGE else "新爆发轴"),
-                    role=role)
+        if name:
+            axis_name = name
+        elif role == ROLE_BURST:
+            axis_name = "爆发轴"          # 固定名，不编号
+        else:
+            prefix = DEFAULT_PREFIX.get(role, "技能轴")
+            axis_name = next_numbered_name(
+                [a.name for a in self.axes if a.role == role], prefix)
+        axis = Axis(name=axis_name, role=role)
         self.axes.append(axis)
         self.save_axes()
         return axis
@@ -606,7 +634,8 @@ class Store:
         self.save_rotations()
 
     def add_rotation(self, name=None):
-        rot = Rotation(name=name or "新编队")
+        rot = Rotation(name=name or next_numbered_name(
+            [r.name for r in self.rotations], "编队"))
         charges = self.charge_axes()
         bursts = self.burst_axes()
         rot.charge_axes = [charges[0].id] if charges else []
