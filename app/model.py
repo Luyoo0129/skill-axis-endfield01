@@ -113,15 +113,61 @@ class Node:
         )
 
 
+TEAM_SIZE = 4
+
+
+def assign_member(members, idx, cn, size=TEAM_SIZE):
+    """把 cn 放到第 idx 位，返回新的队伍列表。
+
+    队伍里同一位干员只能出现一次，所以 cn 已经在别的位时不是「复制一份」，
+    而是**两个位置互换**：cn 去 idx 位，idx 位原来的人去 cn 原来的位。
+    这是用户 2026-11-14 定下的规则，改之前先看交接摘要。
+    """
+    ms = list(members or [])[:size]
+    while len(ms) < size:
+        ms.append("")
+    try:
+        idx = int(idx)
+    except (TypeError, ValueError):
+        return ms
+    if not (0 <= idx < size):
+        return ms
+
+    if not cn:
+        ms[idx] = ""
+        return ms
+
+    for j, m in enumerate(ms):
+        if m == cn and j != idx:
+            ms[j], ms[idx] = ms[idx], cn     # 已在队伍 -> 换位，不产生重复
+            return ms
+    ms[idx] = cn
+    return ms
+
+
 @dataclass
 class Team:
     members: list = field(default_factory=lambda: ["", "", "", ""])
 
     def normalized(self):
-        m = list(self.members)[:4]
-        while len(m) < 4:
+        """补齐/裁到 4 位，并把重复干员（后出现的那个）清空。
+
+        正常操作走 assign_member 不会产生重复；这里是给旧存档、
+        外部导入、手改 JSON 兜底，保证界面永远看不到一队两个同名。
+        """
+        m = ["" if x is None else str(x) for x in list(self.members)[:TEAM_SIZE]]
+        while len(m) < TEAM_SIZE:
             m.append("")
-        return m
+        seen = set()
+        out = []
+        for x in m:
+            if x and x in seen:
+                out.append("")
+                continue
+            if x:
+                seen.add(x)
+            out.append(x)
+        return out
 
     def to_dict(self):
         return {"members": self.normalized()}

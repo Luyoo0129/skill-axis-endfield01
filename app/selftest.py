@@ -345,6 +345,37 @@ def test_pad_ult_modes():
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_team_unique():
+    """队伍不允许重复：已经在队里的干员再放进来 -> 两个位置互换。"""
+    from app.model import Team, assign_member
+
+    base = ["佩丽卡", "管理员", "陈千语", "余烬"]
+
+    moved = assign_member(base, 3, "佩丽卡")
+    check("重复加入变成互换", moved == ["余烬", "管理员", "陈千语", "佩丽卡"], repr(moved))
+    check("互换后仍然 4 人且不重复",
+          len(moved) == 4 and len(set(moved)) == 4)
+
+    replaced = assign_member(base, 1, "新干员")
+    check("换成队伍外的人直接替换",
+          replaced == ["佩丽卡", "新干员", "陈千语", "余烬"], repr(replaced))
+
+    to_empty = assign_member(["佩丽卡", "", "", ""], 2, "佩丽卡")
+    check("拖到空位 = 移动（原位置清空）", to_empty == ["", "", "佩丽卡", ""],
+          repr(to_empty))
+
+    cleared = assign_member(base, 2, "")
+    check("清空某个位置", cleared == ["佩丽卡", "管理员", "", "余烬"], repr(cleared))
+
+    bad = assign_member(base, 9, "佩丽卡")
+    check("越界索引不改动", bad == base, repr(bad))
+
+    # 旧存档里已经重复的：显示时只保留第一次出现，后面清空
+    dedup = Team(members=["佩丽卡", "管理员", "佩丽卡", "余烬"]).normalized()
+    check("重复存档自动去重", dedup == ["佩丽卡", "管理员", "", "余烬"], repr(dedup))
+    check("去重后长度仍是 4", len(dedup) == 4)
+
+
 def test_skip():
     p, rot, axes, s = mk_player(charge_kinds=((KIND_SKILL, KIND_ULT),))
     p.start()
@@ -495,7 +526,7 @@ def main():
     for fn in (test_segment_order, test_play_through, test_slot_mapping,
                test_combo_key, test_ult_requires_hold, test_hold_threshold_setting,
                test_infinite, test_wrong_key, test_key_map, test_any_mode,
-               test_gamepad, test_pad_ult_modes, test_skip, test_empty_segment_skipped,
+               test_gamepad, test_pad_ult_modes, test_team_unique, test_skip, test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,
                test_rotation_team_affects_keys, test_rename_rotation,
                test_store_roundtrip, test_settings_keys, test_export_import,

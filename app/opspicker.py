@@ -107,7 +107,9 @@ class OperatorPicker:
             self._cell(col * CELL_W, row * CELL_H, op)
         rows = (len(items) + cols - 1) // cols
         cv.configure(scrollregion=(0, 0, width, rows * CELL_H + 10))
-        self.status.configure(text="共 %d 名干员" % len(items))
+        self.status.configure(
+            text="共 %d 名干员　·　标「已在队伍」的选中后与那位互换位置，不会出现重复"
+                 % len(items))
 
     def _cell(self, x, y, op):
         cv = self.cv
@@ -136,8 +138,9 @@ class OperatorPicker:
                        text=theme.ELEMENT_CN.get(op["element"], op["element"]),
                        fill=theme.TEXT_MUTED, font=theme.font(theme.F_TINY), tags=(tag,))
         if used:
-            cv.create_text(x + CELL_W / 2, y + 120, text="已在队伍", fill=theme.WARN,
-                           font=theme.font(theme.F_TINY), tags=(tag,))
+            cv.create_text(x + CELL_W / 2, y + 120, text="已在队伍 · 选则换位",
+                           fill=theme.WARN, font=theme.font(theme.F_TINY),
+                           tags=(tag,))
 
         cv.tag_bind(tag, "<Button-1>", lambda e: self.pick(cn))
 

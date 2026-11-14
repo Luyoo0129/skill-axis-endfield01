@@ -9,7 +9,8 @@ from tkinter import filedialog, messagebox
 from . import theme
 from .keys import vk_label
 from .model import (KIND_CN, KIND_COMBO, KIND_SKILL, KINDS, KIND_ULT,
-                    ROLE_BURST, ROLE_CHARGE, ROLE_CN, Axis, Node, Team)
+                    ROLE_BURST, ROLE_CHARGE, ROLE_CN, Axis, Node, Team,
+                    assign_member)
 from .opspicker import OperatorPicker
 from .textdialog import ask_text
 from .widgets import rounded_rect
@@ -213,10 +214,15 @@ class Editor:
 
         team_wrap = tk.Frame(c, bg=theme.PANEL, padx=14, pady=12)
         team_wrap.pack(fill="x")
-        _section(team_wrap, "队伍", "单击选中 · 双击更换").pack(fill="x")
+        _section(team_wrap, "队伍", "单击选中 · 双击更换 · 拖动换位").pack(fill="x")
         self.team_canvas = tk.Canvas(team_wrap, bg=theme.PANEL, highlightthickness=0,
                                      bd=0, height=TEAM_CARD_H + 8)
         self.team_canvas.pack(fill="x", pady=(8, 0))
+        self._team_drag = None
+        for ev, fn in (("<ButtonPress-1>", self._team_press),
+                       ("<B1-Motion>", self._team_drag_move),
+                       ("<ButtonRelease-1>", self._team_release)):
+            self.team_canvas.bind(ev, fn)
 
         skill_wrap = tk.Frame(c, bg=theme.PANEL, padx=14, pady=12)
         skill_wrap.pack(fill="x", pady=(10, 0))
@@ -565,7 +571,8 @@ class Editor:
             rounded_rect(cv, x, 4, x + TEAM_CARD_W, 4 + TEAM_CARD_H, r=10,
                          fill=theme.PANEL_3 if active else theme.PANEL_2,
                          outline=theme.ACCENT if active else theme.BORDER,
-                         width=2 if active else 1, tags=(tag,))
+                         width=2 if active else 1,
+                         tags=(tag, "tmrect_%d" % i))
             if cn:
                 photo = self.icons.render_portrait(cn, 60)
                 if photo is not None:
@@ -600,21 +607,102 @@ class Editor:
         self.refresh_team()
         self.refresh_skills()
 
+    # ---------- 队伍拖拽换位 ----------
+    def _team_index_at(self, x):
+        """canvas 坐标 -> 队伍位（0~3）；落在卡片区外返回 None。"""
+        total = 2 + TEAM_CARD_W * 4 + 10 * 3
+        if x < 0 or x > total + 10:
+            return None
+        idx = int((x - 2) // (TEAM_CARD_W + 10))
+        if idx < 0:
+            return None
+        return min(3, idx)
+
+    def _team_press(self, e):
+        idx = self._team_index_at(e.x)
+        if idx is None:
+            self._team_drag = None
+            return
+        self._team_drag = {"from": idx, "x": e.x, "y": e.y, "target": idx}
+
+    def _team_drag_move(self, e):
+        d = self._team_drag
+        if not d:
+            return
+        moved = abs(e.x - d["x"]) + abs(e.y - d["y"]) >= 6
+        if not moved:
+            return
+        idx = self._team_index_at(e.x)
+        if idx is None:
+            idx = d["from"]
+        if idx != d["target"]:
+            d["target"] = idx
+            self._team_drop_hint(idx)
+            try:
+                self.team_canvas.configure(cursor="fleur")
+            except tk.TclError:
+                pass
+
+    def _team_drop_hint(self, idx):
+        """拖动时把落点那张卡片描成琥珀色。"""
+        cv = self.team_canvas
+        for j in range(4):
+            try:
+                cv.itemconfigure("tmrect_%d" % j,
+                                 outline=theme.ACCENT if j == idx else theme.BORDER,
+                                 width=2 if j == idx else 1)
+            except tk.TclError:
+                pass
+
+    def _team_release(self, e):
+        d, self._team_drag = self._team_drag, None
+        try:
+            self.team_canvas.configure(cursor="")
+        except tk.TclError:
+            pass
+        if not d:
+            return
+        idx = self._team_index_at(e.x)
+        moved = abs(e.x - d["x"]) + abs(e.y - d["y"]) >= 6
+        if not moved or idx is None or idx == d["from"]:
+            self.refresh_team()          # 只是点了一下，还原描边
+            return
+
+        members = self.current_team().normalized()
+        keep = members[d["from"]]
+        target = members[idx]
+        if not keep and not target:
+            self.refresh_team()
+            return
+
+        # 互换两个位置：不会产生重复干员
+        members[d["from"]], members[idx] = target, keep
+        self.set_current_team(members)
+        self._after_team_change()
+
+    def _after_team_change(self):
+        if self.selected_member and self.selected_member not in self.current_team().normalized():
+            self.selected_member = ""
+        self.refresh_team()
+        self.refresh_skills()
+        self.refresh_roster()
+        self.refresh_order()
+        self.refresh_timeline()
+
+    def _assign_slot(self, idx, cn):
+        """把 cn 放进第 idx 位；已在队伍别的位置就互换，绝不出现重复。"""
+        members = assign_member(self.current_team().normalized(), idx, cn)
+        self.set_current_team(members)
+        self.selected_member = cn
+        self._after_team_change()
+
     def _on_slot_change(self, idx):
         members = self.current_team().normalized()
         used = [m for j, m in enumerate(members) if m and j != idx]
 
         def apply(cn):
-            ms = self.current_team().normalized()
-            ms[idx] = cn
-            self.set_current_team(ms)
-            self.selected_member = cn
-            self.refresh_team()
-            self.refresh_skills()
-            self.refresh_roster()
-            self.refresh_order()
-            self.refresh_timeline()
-    
+            self._assign_slot(idx, cn)
+
         OperatorPicker(self.app, apply, current=members[idx], used=used)
 
     # ---------- 按键提示 ----------
