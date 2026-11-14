@@ -559,6 +559,13 @@ class Overlay:
             color = theme.CHARGE
             label = ("充能轴 %d/%d" % (seg.charge_index, seg.charge_total)
                      if seg.charge_total > 1 else "充能轴")
+            # 这条轴设了循环：显示「×N」以及现在是第几遍
+            try:
+                want = int(getattr(seg.axis, "repeat", 1) or 1)
+            except (TypeError, ValueError):
+                want = 1
+            if want > 1:
+                label += " · ×%d" % want
         bw = fonts.pil_text_width(label, self._fs(theme.F_TINY) * SS, True) / SS + 16 * s
         if bx + bw <= name_right:
             self._shape(d, (bx, ymid - 9 * s, bx + bw, ymid + 9 * s),

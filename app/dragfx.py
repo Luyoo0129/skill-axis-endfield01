@@ -19,6 +19,10 @@ from . import theme
 # 拖动阈值：手抖小于这个像素距离算「点了一下」，不算拖
 DRAG_THRESHOLD = 5
 
+# 按住多久才算「要拖动」（防误触）：这段时间内先移动超过 CANCEL_DIST 就判为误触
+HOLD_MS = 200
+CANCEL_DIST = 12
+
 # 让位动画时长（毫秒）与帧间隔
 MOVE_MS = 120
 FRAME_MS = 16

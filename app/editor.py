@@ -65,6 +65,7 @@ class Editor:
         self._ghost = None
         self._ghost_photo = None
         self._pending_drop = None
+        self._arm_job = None
         self._rename_entry = None
 
         self._build()
@@ -243,6 +244,23 @@ class Editor:
         tk.Label(head, text="拖动节点改顺序 · 拖出删除", bg=theme.BG,
                  fg=theme.TEXT_MUTED, font=theme.font(theme.F_TINY)).pack(side="left",
                                                                         padx=10)
+
+        # 「这条轴走几遍」：只对充能轴有意义，爆发轴固定 1
+        self.repeat_box = tk.Frame(head, bg=theme.BG)
+        self.repeat_box.pack(side="left", padx=(6, 0))
+        tk.Label(self.repeat_box, text="循环", bg=theme.BG, fg=theme.TEXT_MUTED,
+                 font=theme.font(theme.F_TINY)).pack(side="left")
+        self.repeat_minus = _btn(self.repeat_box, "－",
+                                 lambda: self.bump_repeat(-1), "ghost")
+        self.repeat_minus.pack(side="left", padx=(6, 0))
+        self.repeat_label = tk.Label(self.repeat_box, text="×1", bg=theme.BG,
+                                     fg=theme.ACCENT,
+                                     font=theme.font(theme.F_SMALL, True), width=4)
+        self.repeat_label.pack(side="left")
+        self.repeat_plus = _btn(self.repeat_box, "＋",
+                                lambda: self.bump_repeat(1), "ghost")
+        self.repeat_plus.pack(side="left")
+
         _btn(head, "复制节点", self.duplicate_node, "ghost").pack(side="right", padx=3)
         _btn(head, "删除节点", self.delete_node, "danger").pack(side="right", padx=3)
 
@@ -453,6 +471,8 @@ class Editor:
         badge = "爆发轴" if is_burst else "充能轴 %d/%d" % (
             charge_ids.index(axis.id) + 1 if axis.id in charge_ids else idx + 1,
             len(charge_ids))
+        if not is_burst and axis.repeat_count() > 1:
+            badge += " · ×%d" % axis.repeat_count()
         bw = theme.font(theme.F_TINY, True).measure(badge) + 18
         bx = LEFT_W - 14 - bw
         rounded_rect(cv, bx, y + 11, bx + bw, y + 31, r=5,
@@ -845,6 +865,32 @@ class Editor:
         self._begin_drag({"type": "new", "kind": kind}, KIND_CN[kind])
 
     # ---------- 技能轴 ----------
+    # ---------- 单条技能轴循环次数 ----------
+    def bump_repeat(self, delta):
+        axis = self.current_axis()
+        if axis is None or axis.role == ROLE_BURST:
+            return
+        axis.repeat = max(1, min(99, axis.repeat_count() + delta))
+        self.store.save_axes()
+        self._sync_repeat_controls(axis)
+        self.refresh_order()
+        self.app.refresh_overlay()
+
+    def _sync_repeat_controls(self, axis):
+        if axis is None:
+            return
+        is_charge = axis.role != ROLE_BURST
+        n = axis.repeat_count() if is_charge else 1
+        try:
+            self.repeat_label.configure(
+                text=("×%d" % n) if is_charge else "×1",
+                fg=theme.ACCENT if (is_charge and n > 1) else theme.TEXT_MUTED)
+            state = "normal" if is_charge else "disabled"
+            self.repeat_minus.configure(state=state)
+            self.repeat_plus.configure(state=state)
+        except tk.TclError:
+            pass
+
     def refresh_timeline(self):
         cv = self.timeline
         self._anim_timeline.cancel()
@@ -885,6 +931,7 @@ class Editor:
         cv.configure(scrollregion=(0, 0, max(x + NODE_W + 24, cv.winfo_width()),
                                    NODE_H + 40))
         self.tl_title.configure(text="技能轴 · %s" % axis.name, fg=color)
+        self._sync_repeat_controls(axis)
 
     def _node_card(self, cv, node, x, y):
         tag = "nd_%s" % node.id
@@ -943,27 +990,71 @@ class Editor:
 
     # ---------- 拖拽 ----------
     def _begin_drag(self, payload, label, image=None):
+        """按下时先「上膛」，按住够久才真正开始拖（防误触）。"""
         self._end_drag()
         self._drag = dict(payload)
-        self._drag["moved"] = False
-        self._drag["press"] = (self.root.winfo_pointerx(), self.root.winfo_pointery())
+        self._drag.update({
+            "moved": False,
+            "armed": False,
+            "aborted": False,
+            "label": label,
+            "image": image,
+            "press": (self.root.winfo_pointerx(), self.root.winfo_pointery()),
+            "arm_at": time.monotonic() + dragfx.HOLD_MS / 1000.0,
+        })
         self._pending_drop = None
-        ghost, photo = dragfx.make_ghost(self.root, label, image=image)
+        self._arm_job = self.root.after(dragfx.HOLD_MS, self._arm_if_ready)
+        self.root.bind_all("<B1-Motion>", self._drag_motion, add="+")
+        self.root.bind_all("<ButtonRelease-1>", self._drag_release, add="+")
+
+    def _arm_if_ready(self):
+        """按住时间到了：不等鼠标动，先把幽灵亮出来（告诉用户「可以拖了」）。"""
+        self._arm_job = None
+        drag = self._drag
+        if not drag or drag.get("aborted") or drag.get("armed"):
+            return
+        if time.monotonic() < drag.get("arm_at", 0.0):
+            return
+        self._arm_drag()
+
+    def _arm_drag(self):
+        """按住时间到了：造幽灵，进入真正的拖动状态。"""
+        drag = self._drag
+        if drag is None or drag.get("armed"):
+            return
+        drag["armed"] = True
+        ghost, photo = dragfx.make_ghost(self.root, drag.get("label", ""),
+                                         image=drag.get("image"))
         self._ghost = ghost
         self._ghost_photo = photo
         if ghost is not None:
             dragfx.set_ghost_alpha(ghost, 0.86)
-        self.root.bind_all("<B1-Motion>", self._drag_motion, add="+")
-        self.root.bind_all("<ButtonRelease-1>", self._drag_release, add="+")
+        try:
+            self.root.configure(cursor="fleur")
+        except tk.TclError:
+            pass
 
     def _drag_motion(self, e):
-        if not self._drag:
+        drag = self._drag
+        if not drag or drag.get("aborted"):
             return
-        px, py = self._drag.get("press", (e.x_root, e.y_root))
-        if not self._drag["moved"]:
-            if abs(e.x_root - px) + abs(e.y_root - py) < dragfx.DRAG_THRESHOLD:
+        px, py = drag.get("press", (e.x_root, e.y_root))
+        dist = abs(e.x_root - px) + abs(e.y_root - py)
+
+        if not drag.get("armed"):
+            if time.monotonic() < drag.get("arm_at", 0.0):
+                # 还没按够时间：动得太早就是误触，直接放弃这次拖动
+                if dist > dragfx.CANCEL_DIST:
+                    drag["aborted"] = True
                 return
-            self._drag["moved"] = True
+            self._arm_drag()
+            if not drag.get("armed"):
+                return
+
+        if not drag["moved"]:
+            if dist < dragfx.DRAG_THRESHOLD:
+                return
+            drag["moved"] = True
         if not dragfx.move_ghost(self._ghost, e.x_root, e.y_root):
             self._ghost = None
 
@@ -1068,7 +1159,14 @@ class Editor:
             return
         idx = self._pending_drop
         moved = drag.get("moved")
+        armed = drag.get("armed")
         self._end_drag()
+
+        if not armed:
+            # 没按够时间（或过早移动）：当作单击，不改顺序
+            if drag.get("type") == "new":
+                self.add_node(self.selected_member, drag["kind"])
+            return
 
         if drag.get("type") == "team":
             if not moved:
@@ -1109,6 +1207,12 @@ class Editor:
     def _end_drag(self):
         self._drag = None
         self._pending_drop = None
+        if self._arm_job is not None:
+            try:
+                self.root.after_cancel(self._arm_job)
+            except (tk.TclError, ValueError):
+                pass
+            self._arm_job = None
         if self._ghost is not None:
             try:
                 self._ghost.destroy()
@@ -1129,6 +1233,10 @@ class Editor:
         try:
             self.team_canvas.configure(cursor="")
         except (tk.TclError, AttributeError):
+            pass
+        try:
+            self.root.configure(cursor="")
+        except tk.TclError:
             pass
 
     def _reorder_axis(self, axis, idx):

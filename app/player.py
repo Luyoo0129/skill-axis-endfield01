@@ -38,6 +38,7 @@ class Player:
         self.index = 0              # 段内第几个节点
         self.done = set()
         self._segments = []
+        self.repeat_done = 0        # 当前这一段已经重复走过几遍（充能轴循环用）
         self.rebuild()
 
     # ---------- 结构 ----------
@@ -102,6 +103,7 @@ class Player:
         self.segment = 0
         self.index = 0
         self.done = set()
+        self.repeat_done = 0
         self._skip_empty()
 
     def _skip_empty(self):
@@ -237,10 +239,24 @@ class Player:
         if axis and self.index < len(axis.nodes):
             return
 
+        # 本段走完：充能轴如果设了「走 N 遍」，先原地重来，别急着往后
+        if axis is not None and self.current_segment() is not None \
+                and self.current_segment().role == "charge":
+            try:
+                want = int(axis.repeat)
+            except (TypeError, ValueError):
+                want = 1
+            if want > 1 and self.repeat_done + 1 < want:
+                self.repeat_done += 1
+                self.index = 0
+                self.done = set()
+                return
+
         # 本段走完 -> 下一段
         self.segment += 1
         self.index = 0
         self.done = set()
+        self.repeat_done = 0
         if self.segment < len(self._segments):
             self._skip_empty()
             if self.segment < len(self._segments):
@@ -251,6 +267,7 @@ class Player:
         self.segment = 0
         self.index = 0
         self.done = set()
+        self.repeat_done = 0
         self._skip_empty()
         if self.segment >= len(self._segments):
             self.state = "finished"

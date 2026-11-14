@@ -394,6 +394,43 @@ def test_move_item():
     check("元素数量不变", len(move_item(base, 2, 0)) == 4)
 
 
+def test_axis_repeat():
+    """充能轴可以单独走 N 遍，走完再往下走；爆发轴不受影响。"""
+    from app.model import Axis, ROLE_CHARGE
+
+    # 一条充能轴 + 一条爆发轴；充能轴设成 2 遍
+    charge_kinds = ((KIND_SKILL,),)
+    p, rot, axes, s = mk_player(charge_kinds=charge_kinds, burst_kinds=(KIND_ULT,))
+    axis = axes[0]
+    axis.role = ROLE_CHARGE
+    axis.repeat = 2
+    p.start()
+    check("循环轴起始在第 1 段", p.segment == 0 and p.index == 0)
+
+    # 第一遍：推进到段尾后应该原地重来，而不是进爆发轴
+    p.press(vk=s.slot_key(0), hold=False)
+    check("第一遍走完回到本段开头", p.segment == 0 and p.index == 0, repr(
+        (p.segment, p.index, p.repeat_done)))
+    check("记录已走遍数", p.repeat_done == 1)
+
+    # 第二遍走完才进爆发轴
+    p.press(vk=s.slot_key(0), hold=False)
+    check("第二遍走完进入爆发轴", p.segment == 1, repr(p.segment))
+    check("换段后遍数归零", p.repeat_done == 0)
+
+    # 爆发轴不循环：走完直接回到第一段
+    p.press(vk=s.slot_key(0), hold=True)
+    check("爆发轴走完回到第一段", p.segment == 0 and p.cycle == 1,
+          repr((p.segment, p.cycle)))
+
+    # 重复次数持久化 & 越界收敛
+    a = Axis(name="循环轴", role=ROLE_CHARGE, repeat=3)
+    check("循环次数持久化", Axis.from_dict(a.to_dict()).repeat == 3)
+    check("循环次数下限 1", Axis(name="x", repeat=0).repeat_count() == 1)
+    check("循环次数上限 99", Axis(name="x", repeat=500).repeat_count() == 99)
+    check("旧数据缺 repeat 默认 1", Axis.from_dict({"name": "旧"}).repeat == 1)
+
+
 def test_skip():
     p, rot, axes, s = mk_player(charge_kinds=((KIND_SKILL, KIND_ULT),))
     p.start()
@@ -544,7 +581,8 @@ def main():
     for fn in (test_segment_order, test_play_through, test_slot_mapping,
                test_combo_key, test_ult_requires_hold, test_hold_threshold_setting,
                test_infinite, test_wrong_key, test_key_map, test_any_mode,
-               test_gamepad, test_pad_ult_modes, test_team_unique, test_move_item, test_skip, test_empty_segment_skipped,
+               test_gamepad, test_pad_ult_modes, test_team_unique, test_move_item,
+               test_axis_repeat, test_skip, test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,
                test_rotation_team_affects_keys, test_rename_rotation,
                test_store_roundtrip, test_settings_keys, test_export_import,

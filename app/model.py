@@ -208,6 +208,15 @@ class Axis:
     name: str = "新技能轴"
     role: str = ROLE_BURST
     nodes: list = field(default_factory=list)
+    # 充能轴可以单独设「这条走几遍」（1 = 只走一遍），走完再接着往下
+    repeat: int = 1
+
+    def repeat_count(self):
+        try:
+            n = int(self.repeat)
+        except (TypeError, ValueError):
+            return 1
+        return max(1, min(99, n))
 
     @property
     def is_burst(self):
@@ -230,6 +239,7 @@ class Axis:
             "id": self.id,
             "name": self.name,
             "role": self.role,
+            "repeat": self.repeat_count(),
             "nodes": [n.to_dict() for n in self.nodes],
         }
 
@@ -239,6 +249,7 @@ class Axis:
             id=d.get("id") or new_id(),
             name=d.get("name", "技能轴"),
             role=d.get("role") or ROLE_BURST,
+            repeat=max(1, min(99, int(d.get("repeat") or 1))),
             nodes=[Node.from_dict(x) for x in d.get("nodes", [])],
         )
 
