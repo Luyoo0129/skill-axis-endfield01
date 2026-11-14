@@ -222,8 +222,28 @@ class Overlay:
             return rot.members()
         return self.app.store.team.normalized()
 
+    def _branch_keys(self, node):
+        """分支点下面那行：把每条分支的触发键压成「1/E」这种。"""
+        s = self.app.store.settings
+        out = []
+        for opt in (getattr(node, "options", None) or []):
+            kind = opt.get("kind")
+            if kind == KIND_COMBO:
+                out.append(vk_label(s.combo_key) if s.combo_key else "E")
+                continue
+            try:
+                slot = self.team_members().index(str(opt.get("operator") or ""))
+            except ValueError:
+                continue
+            digit = s.slot_key(slot)
+            label = vk_label(digit) if digit is not None else "?"
+            out.append(("长" + label) if kind == KIND_ULT else label)
+        return "/".join(out) if out else "选路"
+
     def key_hint(self, node):
         s = self.app.store.settings
+        if getattr(node, "kind", "") == "branch":
+            return "分支"
         if node.kind == KIND_COMBO:
             return vk_label(s.combo_key) if s.combo_key else "—"
         try:
@@ -614,10 +634,21 @@ class Overlay:
                 r, g, b, a = im.split()
                 a = a.point(lambda v: int(v * 0.35))
                 im = Image.merge("RGBA", (r, g, b, a))
-            self._paste(im, cx, icon_cy)
+            if im is not None:
+                self._paste(im, cx, icon_cy)
+            elif getattr(node, "kind", "") == "branch":
+                # 分支点没有图标：画个菱形占位，下面列可选键
+                k = ic * 0.38
+                self._shape(d, (cx - k, icon_cy - k, cx + k, icon_cy + k),
+                            r=4 * self._sc, fill=theme.PANEL_3,
+                            outline=theme.ACCENT, width=2)
+                self._text(d, cx, icon_cy, "分支", theme.F_TINY, theme.ACCENT,
+                           anchor="mm", max_w=slot - 2)
 
             col = theme.ACCENT if cur else (theme.TEXT_MUTED if past else theme.TEXT_DIM)
-            self._text(d, cx, key_y, self.key_hint(node), theme.F_TINY, col,
+            label = (self._branch_keys(node)
+                     if getattr(node, "kind", "") == "branch" else self.key_hint(node))
+            self._text(d, cx, key_y, label, theme.F_TINY, col,
                        anchor="mm", bold=cur, max_w=slot - 2)
             x += slot
 
