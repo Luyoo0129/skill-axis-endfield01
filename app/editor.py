@@ -1000,7 +1000,8 @@ class Editor:
             # 分支展开：每条分支画成一行「和技能轴一样的卡片」
             branch_y = 18 + NODE_H + 18
             for oi, opt in expanded:
-                row_w = self._branch_row(cv, oi, opt, branch_y)
+                row_w = self._branch_row(cv, oi, opt, branch_y,
+                                        can_delete=len(expanded) > 1)
                 width = max(width, row_w + 24)
                 branch_y += NODE_H + 16
             if not expanded:
@@ -1038,7 +1039,7 @@ class Editor:
         self._expanded_branch = None
         return []
 
-    def _branch_row(self, cv, oi, opt, y):
+    def _branch_row(self, cv, oi, opt, y, can_delete=True):
         from .model import option_nodes, option_trigger
 
         tint = theme.CYAN if oi % 2 == 0 else theme.GREEN
@@ -1092,7 +1093,21 @@ class Editor:
         cv.create_text(pill_x + w / 2, y + 42, text=label, fill=tint,
                        font=theme.font(theme.F_TINY, True), tags=(tag,))
         cv.tag_bind(tag, "<Button-1>", lambda e, i=oi: self._pick_branch_next(i))
-        return pill_x + w + 100
+
+        # 删除这条分支：只剩一条时置灰不可删
+        dx = pill_x + w + 10
+        del_tag = "bn_del_%d" % oi
+        rounded_rect(cv, dx, y + 30, dx + 24, y + 54, r=6,
+                     fill=theme.PANEL_3,
+                     outline=theme.BAD if can_delete else theme.BORDER,
+                     tags=(del_tag,))
+        cv.create_text(dx + 12, y + 42, text="×",
+                       fill=theme.BAD if can_delete else theme.TEXT_MUTED,
+                       font=theme.font(theme.F_SMALL, True), tags=(del_tag,))
+        if can_delete:
+            cv.tag_bind(del_tag, "<Button-1>",
+                        lambda e, i=oi: self._branch_remove_option(i))
+        return dx + 24 + 40
 
     def _branch_card(self, cv, node, x, y, oi, ni, tint=theme.CYAN, trigger=False):
         tag = "br_%d_%d" % (oi, ni)
@@ -1489,7 +1504,9 @@ class Editor:
             return []
         for node in axis.nodes:
             if getattr(node, "kind", "") == KIND_BRANCH and node.id == self._expanded_branch:
-                return list(node.options or [])
+                if node.options is None:
+                    node.options = []
+                return node.options        # 返回真实列表，删除/新增才改得到数据
         return []
 
     def _timeline_target(self, e):
@@ -1547,6 +1564,14 @@ class Editor:
             opts[toi]["nodes"] = dst
         self._after_branch_edit()
 
+    def _branch_remove_option(self, oi):
+        """删掉一条分支；只剩一条时不允许删。"""
+        opts = self._branch_option_list()
+        if len(opts) <= 1 or not (0 <= oi < len(opts)):
+            return
+        opts.pop(oi)
+        self._after_branch_edit()
+
     def _branch_add_option(self):
         axis = self.current_axis()
         node = None
@@ -1556,6 +1581,8 @@ class Editor:
                 break
         if node is None:
             return
+        if len(node.options or []) >= 12:
+            return                       # 最多 12 条分支
         team = [m for m in self.current_team().normalized() if m]
         node.options = list(node.options or []) + [{
             "trigger": {"operator": team[0] if team else "",

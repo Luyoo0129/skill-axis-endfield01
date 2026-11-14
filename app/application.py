@@ -165,7 +165,13 @@ class Application:
             if kind == "pad":
                 self._handle_pad(item[1], item[2])
             elif kind == "gamepad":
+                was = self.pad_connected
                 self.pad_connected = (item[1] == "connected")
+                if was != self.pad_connected and self.overlay is not None:
+                    try:
+                        self.overlay.notify_pad(self.pad_connected)
+                    except Exception as exc:  # noqa: BLE001
+                        self._note_error(exc)
                 if self.editor is not None:
                     try:
                         self.editor._sync_settings_widgets()
@@ -395,6 +401,14 @@ class Application:
         if enabled and not self.gamepad._thread:
             self.gamepad.start()
         self.pad_rules.reset()
+        if not enabled:
+            self.pad_connected = False
+        self.refresh_overlay()
+        if self.overlay is not None:
+            try:
+                self.overlay.notify_pad(bool(enabled and self.pad_connected))
+            except Exception as exc:  # noqa: BLE001
+                self._note_error(exc)
 
     # ================= 面板 =================
     def open_test_panel(self):

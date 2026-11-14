@@ -113,24 +113,55 @@ class Overlay:
                 return list(seg.axis.nodes)
         return []
 
+    def _node_width(self, node, ic, gap):
+        """节点占多宽：普通节点一格；分支格按分支数并排（图标大小不变）。"""
+        if getattr(node, "kind", "") == "branch":
+            n = len(self._branch_trigger_items(node))
+            if n <= 0:
+                return ic
+            n = min(12, n)
+            g = max(2, gap // 2)
+            return n * ic + (n - 1) * g
+        return ic
+
+    def _fit_window(self, widths, idx, ic, gap, pad, max_w):
+        """从当前节点往两边扩，尽量多显示，返回 (start, visible)。"""
+        n = len(widths)
+        if n == 0:
+            return 0, 0
+        idx = max(0, min(idx, n - 1))
+        lo = hi = idx
+        width = widths[idx]
+        while True:
+            grew = False
+            if hi + 1 < n and pad * 2 + width + gap + widths[hi + 1] <= max_w:
+                hi += 1
+                width += gap + widths[hi]
+                grew = True
+            if lo - 1 >= 0 and pad * 2 + width + gap + widths[lo - 1] <= max_w:
+                lo -= 1
+                width += gap + widths[lo]
+                grew = True
+            if not grew:
+                break
+        return lo, hi - lo + 1
+
     def _layout(self):
-        """算出窗口尺寸与可见区间。"""
+        """算出窗口尺寸、可见区间、每个节点的宽度。"""
         ic, gap, pad, head, height = self._metrics()
         nodes = self._nodes()
         n = max(1, len(nodes))
-        slot = ic + gap
-
-        content_w = pad * 2 + n * slot - gap
+        widths = [self._node_width(nd, ic, gap) for nd in nodes] or [ic]
         max_w = int(self.win.winfo_screenwidth() * 0.92)
         min_w = max(MIN_W, int(round(MIN_W * self.scale)))
 
-        visible = n
-        if content_w > max_w:
-            visible = max(3, (max_w - pad * 2 + gap) // slot)
-            content_w = pad * 2 + visible * slot - gap
-
+        p = self.app.player
+        idx = max(0, min(p.index, len(widths) - 1))
+        start, visible = self._fit_window(widths, idx, ic, gap, pad, max_w)
+        content_w = pad * 2 + sum(widths[start:start + visible]) + \
+            gap * max(0, visible - 1)
         W = max(min_w, min(content_w, max_w))
-        return W, height, head, ic, slot, pad, nodes, visible
+        return W, height, head, ic, gap, pad, nodes, visible, start, widths
 
     def _min_width(self):
         return max(MIN_W, int(round(MIN_W * self.scale)))
@@ -259,6 +290,20 @@ class Overlay:
 
     def _trigger_key(self, operator, kind):
         s = self.app.store.settings
+        if self._use_pad():
+            if kind == "combo":
+                return button_name(s.pad_combo, s.gamepad_scheme)
+            try:
+                slot = self.team_members().index(operator)
+            except ValueError:
+                return "?"
+            letter = button_name(s.pad_slot_key(slot), s.gamepad_scheme) or "?"
+            if kind == "ult":
+                if getattr(s, "pad_ult_mode", "hold") == "chord":
+                    return "%s+%s" % (button_name(s.pad_combo, s.gamepad_scheme),
+                                      letter)
+                return "长" + letter
+            return letter
         if kind == "combo":
             return vk_label(s.combo_key) if s.combo_key else "E"
         try:
@@ -271,42 +316,43 @@ class Overlay:
         label = vk_label(digit)
         return ("长" + label) if kind == "ult" else label
 
-    def _draw_branch_cell(self, d, node, cx, icon_cy, ic, cur, past):
-        """一个格里并排两个触发技能的小图标，上面写「分支」。"""
-        items = self._branch_trigger_items(node)
+    def _draw_branch_cell(self, d, node, x, icon_cy, ic, width, cur, past,
+                          key_y):
+        """分支格：所有触发技能并排（图标大小和普通节点一致），下面各标键位。"""
+        items = self._branch_trigger_items(node)[:12]
         if not items:
             k = ic * 0.38
+            cx = x + width / 2
             self._shape(d, (cx - k, icon_cy - k, cx + k, icon_cy + k),
                         r=4 * self._sc, fill=theme.PANEL_3,
                         outline=theme.ACCENT, width=2)
-            self._text(d, cx, icon_cy, "分支", theme.F_TINY, theme.ACCENT,
-                       anchor="mm", max_w=ic - 2)
             return
 
-        shown = items[:2]
-        size = ic * (0.62 if len(shown) > 1 else 0.82)
-        gap = max(2, int(2 * self._sc))
-        total = size * len(shown) + gap * (len(shown) - 1)
-        left = cx - total / 2
-        for i, item in enumerate(shown):
+        n = len(items)
+        g = max(2, int(3 * self._sc))
+        col = (theme.ACCENT if cur
+               else (theme.TEXT_MUTED if past else theme.TEXT_DIM))
+        # 顶部小字「分支」（画在图标上方的一小条里，不压图标）
+        self._text(d, x + 1, icon_cy - ic / 2 - 9 * self._sc, "分支",
+                   theme.F_TINY, col, anchor="lm", bold=cur)
+        for i, item in enumerate(items):
             icon_file = item[0]
-            im = (self.app.icons.render_pil(icon_file, int(size * SS))
+            cx = x + ic / 2 + i * (ic + g)
+            im = (self.app.icons.render_pil(icon_file, int(ic * SS))
                   if icon_file else None)
             if im is not None and past:
                 im = im.copy()
-                r, g, b, a = im.split()
+                r, gg, b, a = im.split()
                 a = a.point(lambda v: int(v * 0.35))
-                im = Image.merge("RGBA", (r, g, b, a))
-            self._paste(im, left + size / 2 + i * (size + gap), icon_cy - 1)
-        # 顶部小字「分支」+ 琥珀底栏，和普通节点区分开
-        top = icon_cy - size / 2 - 7 * self._sc
-        self._text(d, cx, top, "分支", theme.F_TINY,
-                   theme.ACCENT if cur else theme.ACCENT_SOFT,
-                   anchor="mm", max_w=ic)
-        self._shape(d, (cx - ic / 2, icon_cy + size / 2 + 1,
-                        cx + ic / 2, icon_cy + size / 2 + 1 + max(1, 2 * self._sc)),
-                    r=1 * self._sc,
-                    fill=theme.ACCENT if cur else theme.ACCENT_SOFT)
+                im = Image.merge("RGBA", (r, gg, b, a))
+            self._paste(im, cx, icon_cy)
+            self._text(d, cx, key_y, item[1], theme.F_TINY, col,
+                       anchor="mm", bold=cur, max_w=ic + g - 1)
+        # 琥珀底栏，标明这是一组「选路」
+        self._shape(d, (x, icon_cy + ic / 2 + 3 * self._sc,
+                        x + width, icon_cy + ic / 2 + 3 * self._sc +
+                        max(1, 2 * self._sc)),
+                    r=1 * self._sc, fill=theme.ACCENT if cur else theme.ACCENT_SOFT)
 
     def _branch_hint_text(self, node):
         """分支成为当前节点时顶部闪的那行提醒。"""
@@ -339,10 +385,35 @@ class Overlay:
             out.append(("长" + label) if kind == KIND_ULT else label)
         return "/".join(out) if out else "选路"
 
+    def _use_pad(self):
+        """现在是否该按手柄显示：启用手柄监听 + 确实连上了。"""
+        try:
+            return (bool(self.app.store.settings.gamepad_enabled)
+                    and bool(self.app.pad_connected))
+        except AttributeError:
+            return False
+
     def key_hint(self, node):
+        """这颗节点在悬浮窗下面显示的按键：连了手柄显手柄键，否则显键盘键。"""
         s = self.app.store.settings
         if getattr(node, "kind", "") == "branch":
-            return "分支"
+            return "选路"
+        if self._use_pad():
+            if node.kind == KIND_COMBO:
+                return button_name(s.pad_combo, s.gamepad_scheme)
+            try:
+                slot = self.team_members().index(node.operator)
+            except ValueError:
+                return "?"
+            letter = button_name(s.pad_slot_key(slot), s.gamepad_scheme)
+            if not letter:
+                return "?"
+            if node.kind == KIND_ULT:
+                if getattr(s, "pad_ult_mode", "hold") == "chord":
+                    return "%s+%s" % (button_name(s.pad_combo, s.gamepad_scheme),
+                                      letter)
+                return "长" + letter
+            return letter
         if node.kind == KIND_COMBO:
             return vk_label(s.combo_key) if s.combo_key else "—"
         try:
@@ -354,6 +425,29 @@ class Overlay:
             return "?"
         label = vk_label(digit)
         return ("长按" + label) if node.kind == KIND_ULT else label
+
+    def _status_text(self, nodes):
+        """底部状态行：先警告，其次手柄连接状态。"""
+        warn = self._warn_text(nodes)
+        if warn:
+            return warn, theme.WARN
+        try:
+            s = self.app.store.settings
+        except AttributeError:
+            return "", theme.TEXT_MUTED
+        if s.gamepad_enabled:
+            if self.app.pad_connected:
+                return "手柄：已连接（按键按手柄显示）", theme.TEXT_MUTED
+            return "手柄：未连接（当前按键按键盘显示）", theme.WARN
+        return "", theme.TEXT_MUTED
+
+    def notify_pad(self, connected):
+        """手柄连上/断开时闪一行提醒。"""
+        if connected:
+            self.show_hint("手柄已连接，按键已切换为手柄")
+        else:
+            self.show_hint("手柄已断开，按键切回键盘")
+        self._safe_redraw()
 
     def _warn_text(self, nodes):
         """给出「为什么按了没反应」的可见提示。"""
@@ -529,7 +623,7 @@ class Overlay:
         self._ensure_layered()
         self._maybe_branch_hint()
 
-        W, H, head, ic, slot, pad, nodes, visible = self._layout()
+        W, H, head, ic, gap, pad, nodes, visible, start, widths = self._layout()
         if W != self._W or H != self._H:
             self._W, self._H = W, H
             try:
@@ -548,16 +642,21 @@ class Overlay:
 
         self._frame(d, W, H)
         self._header(d, W, head, nodes)
-        self._strip(d, W, H, head, ic, slot, pad, nodes, visible)
+        self._strip(d, W, H, head, ic, gap, pad, nodes, visible, start, widths)
 
-        warn = self._warn_text(nodes)
+        # 底部最多两行：上行 = 瞬时提醒（选路/手柄连接），下行 = 状态/警告。
+        # 两行间距固定 14px 且都做宽度截断，避免文字互相压住。
+        line_gap = max(14, int(14 * self._sc))
+        bottom_y = H - max(6, 6 * self._sc)
+        warn, warn_color = self._status_text(nodes)
         if warn:
-            self._text(d, W / 2, H - max(9, 9 * self._sc), warn,
-                       theme.F_TINY, theme.WARN, anchor="mm", bold=True)
+            self._text(d, W / 2, bottom_y, warn, theme.F_TINY, warn_color,
+                       anchor="mm", bold=True, max_w=W - 2 * pad)
 
         if self._hint and time.time() < self._hint_until:
-            self._text(d, W / 2, H - max(22, 22 * self._sc), self._hint,
-                       theme.F_TINY, theme.BAD, anchor="mm", bold=True)
+            self._text(d, W / 2, bottom_y - line_gap, self._hint,
+                       theme.F_TINY, theme.ACCENT, anchor="mm", bold=True,
+                       max_w=W - 2 * pad)
         elif self._hint:
             self._hint = ""
 
@@ -693,7 +792,7 @@ class Overlay:
             self._text(d, bx + bw / 2, ymid, label, theme.F_TINY, color,
                        anchor="mm", bold=True)
 
-    def _strip(self, d, W, H, head, ic, slot, pad, nodes, visible):
+    def _strip(self, d, W, H, head, ic, gap, pad, nodes, visible, start, widths):
         if not nodes:
             self._text(d, W / 2, head + (H - head) / 2, "这条轴还没有技能",
                        theme.F_SMALL, theme.TEXT_MUTED, anchor="mm")
@@ -701,39 +800,32 @@ class Overlay:
 
         p = self.app.player
         idx = max(0, min(p.index, len(nodes) - 1))
-
-        start = 0
-        if len(nodes) > visible:
-            start = max(0, min(idx - visible // 2, len(nodes) - visible))
         shown = nodes[start:start + visible]
+        shown_w = widths[start:start + visible]
 
-        top = head + 6 * self._sc
+        top = head + 12 * self._sc
         icon_cy = top + ic / 2
         key_y = icon_cy + ic / 2 + 11 * self._sc
 
-        # 窗口比内容宽时（顶栏需要最小宽度），内容居中
-        gap = slot - ic
-        content_w = pad * 2 + len(shown) * slot - gap
+        content_w = pad * 2 + sum(shown_w) + gap * max(0, len(shown_w) - 1)
         x = (W - content_w) / 2.0 + pad
         for i, node in enumerate(shown):
             gi = start + i
+            w = shown_w[i]
             cur = gi == idx
             past = gi < idx
-            cx = x + ic / 2
-
-            if cur:
-                k = 5 * self._sc
-                self._shape(d, (cx - ic / 2 - k, icon_cy - ic / 2 - k,
-                                cx + ic / 2 + k, icon_cy + ic / 2 + k),
-                            r=8 * self._sc, fill=None, outline=theme.ACCENT,
-                            width=2)
+            cx = x + w / 2
 
             if getattr(node, "kind", "") == "branch":
-                # 分支格：两个触发技能各自的图标（和前面的技能图标同一套）
-                self._draw_branch_cell(d, node, cx, icon_cy, ic, cur, past)
-                col = theme.ACCENT if cur else (theme.TEXT_MUTED if past else theme.TEXT_DIM)
-                label = self._branch_keys(node)
+                self._draw_branch_cell(d, node, x, icon_cy, ic, w, cur, past,
+                                       key_y)
             else:
+                if cur:
+                    k = 5 * self._sc
+                    self._shape(d, (cx - ic / 2 - k, icon_cy - ic / 2 - k,
+                                    cx + ic / 2 + k, icon_cy + ic / 2 + k),
+                                r=8 * self._sc, fill=None, outline=theme.ACCENT,
+                                width=2)
                 im = (self.app.icons.render_pil(node.icon, int(ic * SS))
                       if node.icon else None)
                 if im is not None and past:
@@ -742,14 +834,15 @@ class Overlay:
                     a = a.point(lambda v: int(v * 0.35))
                     im = Image.merge("RGBA", (r, g, b, a))
                 self._paste(im, cx, icon_cy)
-                col = theme.ACCENT if cur else (theme.TEXT_MUTED if past else theme.TEXT_DIM)
-                label = self.key_hint(node)
-            self._text(d, cx, key_y, label, theme.F_TINY, col,
-                       anchor="mm", bold=cur, max_w=slot - 2)
-            x += slot
+                col = (theme.ACCENT if cur
+                       else (theme.TEXT_MUTED if past else theme.TEXT_DIM))
+                self._text(d, cx, key_y, self.key_hint(node), theme.F_TINY, col,
+                           anchor="mm", bold=cur, max_w=w - 2)
+            x += w + gap
 
         if len(nodes) > visible:
             side = "→" if start + visible < len(nodes) else ""
             if side:
                 self._text(d, W - pad - 2, icon_cy, side, theme.F_BODY,
                            theme.TEXT_MUTED, anchor="rm")
+
