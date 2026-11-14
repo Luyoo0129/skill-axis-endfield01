@@ -25,7 +25,7 @@ KIND_COMBO = "combo"
 KIND_ULT = "ult"
 KIND_BRANCH = "branch"     # 分支点节点（不在 KINDS 里：它不是技能，没有图标）
 KINDS = (KIND_SKILL, KIND_COMBO, KIND_ULT)
-KIND_CN = {KIND_SKILL: "技能", KIND_COMBO: "连携", KIND_ULT: "终结",
+KIND_CN = {KIND_SKILL: "战技", KIND_COMBO: "连携", KIND_ULT: "终结",
            KIND_BRANCH: "分支"}
 
 # 技能键位规则（游戏内默认）：
@@ -91,7 +91,7 @@ class Node:
 
     @property
     def label(self):
-        base = KIND_CN.get(self.kind, "技能")
+        base = KIND_CN.get(self.kind, "战技")
         try:
             n = int(self.stage or 1)
         except (TypeError, ValueError):

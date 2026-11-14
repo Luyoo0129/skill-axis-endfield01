@@ -67,7 +67,7 @@ class TestPanel:
         self.listbox.pack(fill="both", expand=True, pady=(4, 10))
 
         tk.Label(wrap, text="提示：如果这里能看到按键，但游戏里悬浮窗不推进，"
-                            "通常是绑定键和实际技能键不一致。",
+                            "通常是绑定键和实际战技键不一致。",
                  bg=theme.BG, fg=theme.TEXT_MUTED, font=theme.font(9),
                  anchor="w", wraplength=510, justify="left").pack(fill="x")
 
@@ -115,8 +115,8 @@ class TestPanel:
             op = team[slot] if slot < len(team) else ""
             if not op:
                 return "槽位 %d 为空" % (slot + 1)
-            return "第%d位 %s（短按技能 / 长按终结）" % (slot + 1, op)
-        return "非技能键"
+            return "第%d位 %s（短按战技 / 长按终结）" % (slot + 1, op)
+        return "非战技键"
 
     def refresh_status(self):
         lis = self.app.listener

@@ -61,7 +61,7 @@ class IconPicker:
         bar = tk.Frame(self.win, bg=theme.BG, padx=16)
         bar.pack(fill="x", pady=(0, 8))
         self.filter_btns = {}
-        for key, label in (("all", "全部"), ("skill", "技能"),
+        for key, label in (("all", "全部"), ("skill", "战技"),
                            ("combo", "连携"), ("ult", "终结"), ("custom", "自定义")):
             b = _btn(bar, label, lambda k=key: self.set_kind(k), active=(key == "all"))
             b.pack(side="left", padx=(0, 6))

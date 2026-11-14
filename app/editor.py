@@ -231,7 +231,8 @@ class Editor:
 
         skill_wrap = tk.Frame(c, bg=theme.PANEL, padx=14, pady=12)
         skill_wrap.pack(fill="x", pady=(10, 0))
-        _section(skill_wrap, "技能", "拖到下方技能轴，或点一下加到末尾").pack(fill="x")
+        _section(skill_wrap, "战技 / 连携 / 终结",
+                 "拖到下方技能轴，或点一下加到末尾").pack(fill="x")
         self.skill_canvas = tk.Canvas(skill_wrap, bg=theme.PANEL, highlightthickness=0,
                                       bd=0, height=SKILL_CARD_H + 8)
         self.skill_canvas.pack(fill="x", pady=(8, 0))
@@ -864,8 +865,7 @@ class Editor:
             for stage in range(1, stages + 1):
                 file = self.icons.icon_for(cn, kind, stage)
                 tag = "sk_%s_%d" % (kind, stage)
-                label = KIND_CN[kind] + ("" if stages == 1
-                                         else " " + forms.stage_suffix(stage))
+                label = self._form_label(cn, kind, stage, stages)
                 rounded_rect(cv, x, 4, x + SKILL_CARD_W, 4 + SKILL_CARD_H, r=10,
                              fill=theme.PANEL_2, outline=theme.BORDER, tags=(tag,))
                 photo = self.icons.render(file, 56) if file else None
@@ -894,9 +894,17 @@ class Editor:
                          self._stage_label(kind, stage))
 
     def _stage_label(self, kind, stage):
-        stages = max(1, self._stage_count(self.selected_member, kind))
-        base = KIND_CN.get(kind, "技能")
-        return base if stages <= 1 else "%s %s" % (base, forms.stage_suffix(stage))
+        n = self._stage_count(self.selected_member, kind)
+        return self._form_label(self.selected_member, kind, stage, n)
+
+    def _form_label(self, operator, kind, stage, stages=None):
+        """技能卡/节点的显示名：优先用 forms.json 里登记的名字。"""
+        base = KIND_CN.get(kind, "战技")
+        name = forms.label_for(operator, kind, stage, fallback="")
+        if name:
+            return name
+        n = stages if stages is not None else self._stage_count(operator, kind)
+        return base if n <= 1 else "%s %s" % (base, forms.stage_suffix(stage))
 
     def _stage_count(self, operator, kind):
         files = self.icons.forms_of(operator).get(kind, [])
@@ -1002,7 +1010,8 @@ class Editor:
         cv.create_text(x + NODE_W / 2, y + 70, text=node.operator[:6], fill=theme.TEXT,
                        font=theme.font(theme.F_SMALL, True), tags=(tag,))
         cv.create_text(x + NODE_W / 2, y + 86,
-                       text="%s · %s" % (node.label, self.key_hint(node)),
+                       text="%s · %s" % (self._node_label(node),
+                                         self.key_hint(node)),
                        fill=theme.TEXT_MUTED, font=theme.font(theme.F_TINY), tags=(tag,))
         cv.tag_bind(tag, "<Button-1>", lambda e, n=node: self._node_press(n, e))
 
@@ -1011,6 +1020,12 @@ class Editor:
 
     def _select_node(self, node_id):
         pass
+
+    def _node_label(self, node):
+        """节点显示名：多形态用登记的名字（如「战技·意诀」），否则用种类名。"""
+        if getattr(node, "kind", "") == KIND_BRANCH:
+            return "分支"
+        return self._form_label(node.operator, node.kind, getattr(node, "stage", 1))
 
     def add_node(self, operator, kind, index=None, stage=1):
         axis = self.current_axis()

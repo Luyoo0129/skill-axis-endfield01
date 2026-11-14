@@ -437,7 +437,7 @@ def test_multi_stage():
 
     n1 = Node(operator="祀", kind=KIND_SKILL, stage=1)
     n2 = Node(operator="祀", kind=KIND_SKILL, stage=2)
-    check("段号进 label", n1.label == "技能" and n2.label == "技能 2",
+    check("段号进 label", n1.label == "战技" and n2.label == "战技 2",
           repr((n1.label, n2.label)))
     check("段号持久化", Node.from_dict(n2.to_dict()).stage == 2)
     check("旧数据默认第 1 段", Node.from_dict({"operator": "祀"}).stage == 1)
@@ -466,6 +466,22 @@ def test_multi_stage():
     check("祀的战技登记为 2 段", forms.stages("祀", "skill") == 2)
     check("诀的终结登记为 2 段", forms.stages("诀", "ult") == 2)
     check("没登记的干员默认 1 段", forms.stages("佩丽卡", "skill") == 1)
+
+    # 按名字区分形态（用户要求，别再用 ①②）
+    check("诀第二段叫「战技·意诀」",
+          forms.label_for("诀", "skill", 2) == "战技·意诀",
+          repr(forms.label_for("诀", "skill", 2)))
+    check("诀连携第二段叫「连携·意诀」",
+          forms.label_for("诀", "combo", 2) == "连携·意诀")
+    check("明河第二段叫「战技·连携后」",
+          forms.label_for("明河", "skill", 2) == "战技·连携后")
+    check("梨诺两段叫「战技·开 / 战技·关」",
+          forms.label_for("梨诺", "skill", 1) == "战技·开"
+          and forms.label_for("梨诺", "skill", 2) == "战技·关")
+    check("噗切娜两段按第一段/第二段命名",
+          forms.label_for("噗切娜", "skill", 2) == "战技·第二段")
+    check("没登记名字时返回空（用兜底显示）",
+          forms.label_for("佩丽卡", "skill", 1) == "")
 
 
 def test_branch():

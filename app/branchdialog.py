@@ -113,7 +113,7 @@ class BranchDialog:
             self._menu(row, op_var, team or ["（队伍为空）"], 10,
                        lambda v, o=opt: o.update(operator=v))
 
-            kind_var = tk.StringVar(value=KIND_CN.get(opt.get("kind"), "技能"))
+            kind_var = tk.StringVar(value=KIND_CN.get(opt.get("kind"), "战技"))
             self._menu(row, kind_var, [KIND_CN[k] for k in KINDS], 6,
                        lambda v, o=opt: o.update(kind=self._kind_of(v)))
 
