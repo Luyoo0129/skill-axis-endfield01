@@ -6,10 +6,10 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from . import dragfx, theme
+from . import dragfx, forms, theme
 from .keys import vk_label
-from .model import (KIND_CN, KIND_COMBO, KIND_SKILL, KINDS, KIND_ULT,
-                    ROLE_BURST, ROLE_CHARGE, ROLE_CN, Axis, Node, Team,
+from .model import (KIND_BRANCH, KIND_CN, KIND_COMBO, KIND_SKILL, KINDS, KIND_ULT,
+                    ROLE_BURST, ROLE_CHARGE, ROLE_CN, ROLE_ROUTE, Axis, Node, Team,
                     assign_member, move_item)
 from .opspicker import OperatorPicker
 from .textdialog import ask_text
@@ -207,6 +207,8 @@ class Editor:
 
         _btn(grid, "＋ 新建技能轴", self.new_axis, "ghost").grid(
             row=0, column=0, sticky="ew", padx=(0, 3), pady=3)
+        _btn(grid, "＋ 新建路线轴", self.new_route_axis, "ghost").grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=(0, 3), pady=3)
         _btn(grid, "＋ 新建编队", self.new_rotation, "ghost").grid(
             row=0, column=1, sticky="ew", padx=(3, 0), pady=3)
         _btn(grid, "删除此技能轴", self.delete_axis, "danger").grid(
@@ -261,6 +263,7 @@ class Editor:
                                 lambda: self.bump_repeat(1), "ghost")
         self.repeat_plus.pack(side="left")
 
+        _btn(head, "＋ 分支点", self.add_branch_node, "ghost").pack(side="right", padx=3)
         _btn(head, "复制节点", self.duplicate_node, "ghost").pack(side="right", padx=3)
         _btn(head, "删除节点", self.delete_node, "danger").pack(side="right", padx=3)
 
@@ -295,7 +298,7 @@ class Editor:
         return self.store.active_rotation()
 
     def _order(self):
-        """当前编队的播放顺序：充能轴们 + 爆发轴。"""
+        """当前编队的播放顺序：充能轴们 + 爆发轴；末尾再接路线轴（只用于编辑）。"""
         rot = self.current_rotation()
         if not rot:
             return []
@@ -304,6 +307,7 @@ class Editor:
         burst = self.store.axis_by_id(rot.burst_axis)
         if burst is not None:
             out.append(burst)
+        out += [a for a in self.store.axes if getattr(a, "role", "") == ROLE_ROUTE]
         return out
 
     # ---------- 编队 ----------
@@ -454,7 +458,13 @@ class Editor:
 
     def _order_row(self, cv, axis, idx, y, charge_ids):
         is_burst = axis.role == ROLE_BURST
-        color = theme.BURST if is_burst else theme.CHARGE
+        is_route = axis.role == ROLE_ROUTE
+        if is_burst:
+            color = theme.BURST
+        elif is_route:
+            color = theme.CYAN
+        else:
+            color = theme.CHARGE
         active = axis.id == self.current_axis_id
         tag = "row_%s" % axis.id
 
@@ -468,10 +478,15 @@ class Editor:
         cv.create_text(22, y + 13, anchor="nw", text=axis.name, fill=theme.TEXT,
                        font=theme.font(theme.F_BODY, True), tags=(tag,))
 
-        badge = "爆发轴" if is_burst else "充能轴 %d/%d" % (
-            charge_ids.index(axis.id) + 1 if axis.id in charge_ids else idx + 1,
-            len(charge_ids))
-        if not is_burst and axis.repeat_count() > 1:
+        if is_burst:
+            badge = "爆发轴"
+        elif is_route:
+            badge = "路线轴"
+        else:
+            badge = "充能轴 %d/%d" % (
+                charge_ids.index(axis.id) + 1 if axis.id in charge_ids else idx + 1,
+                len(charge_ids))
+        if not is_burst and not is_route and axis.repeat_count() > 1:
             badge += " · ×%d" % axis.repeat_count()
         bw = theme.font(theme.F_TINY, True).measure(badge) + 18
         bx = LEFT_W - 14 - bw
@@ -551,6 +566,14 @@ class Editor:
         self.current_axis_id = axis.id
         self.refresh_all()
         self.app.rebuild_player()
+
+    def new_route_axis(self):
+        """新建一条「路线轴」：不进播放顺序，只给分支点当分支用。"""
+        axis = self.store.add_axis(ROLE_ROUTE)
+        axis.name = "路线 · %s" % axis.name if "路线" not in axis.name else axis.name
+        self.store.save_axes()
+        self.current_axis_id = axis.id
+        self.refresh_all()
 
     def delete_axis(self):
         axis = self.current_axis()
@@ -834,41 +857,56 @@ class Editor:
             cv.create_text(6, 30, anchor="w", text="先在队伍里选干员",
                            fill=theme.TEXT_MUTED, font=theme.font(theme.F_SMALL))
             return
-        files = self.icons.skills_of(cn)
+        files = self.icons.forms_of(cn)
         x = 2
         for kind in KINDS:
-            file = files.get(kind, "")
-            tag = "sk_%s" % kind
-            rounded_rect(cv, x, 4, x + SKILL_CARD_W, 4 + SKILL_CARD_H, r=10,
-                         fill=theme.PANEL_2, outline=theme.BORDER, tags=(tag,))
-            photo = self.icons.render(file, 56) if file else None
-            if photo is not None:
-                cv.create_image(x + SKILL_CARD_W / 2, 4 + 36, image=photo, tags=(tag,))
-            else:
-                cv.create_text(x + SKILL_CARD_W / 2, 4 + 36, text="无图",
-                               fill=theme.TEXT_MUTED,
+            stages = max(forms.stages(cn, kind), len(files.get(kind, [])))
+            for stage in range(1, stages + 1):
+                file = self.icons.icon_for(cn, kind, stage)
+                tag = "sk_%s_%d" % (kind, stage)
+                label = KIND_CN[kind] + ("" if stages == 1
+                                         else " " + forms.stage_suffix(stage))
+                rounded_rect(cv, x, 4, x + SKILL_CARD_W, 4 + SKILL_CARD_H, r=10,
+                             fill=theme.PANEL_2, outline=theme.BORDER, tags=(tag,))
+                photo = self.icons.render(file, 56) if file else None
+                if photo is not None:
+                    cv.create_image(x + SKILL_CARD_W / 2, 4 + 36, image=photo,
+                                    tags=(tag,))
+                else:
+                    cv.create_text(x + SKILL_CARD_W / 2, 4 + 36, text="无图",
+                                   fill=theme.TEXT_MUTED,
+                                   font=theme.font(theme.F_TINY), tags=(tag,))
+                cv.create_text(x + SKILL_CARD_W / 2, 4 + 76, text=label,
+                               fill=theme.TEXT, font=theme.font(theme.F_SMALL, True),
+                               tags=(tag,))
+                cv.create_text(x + SKILL_CARD_W / 2, 4 + 92,
+                               text=self.kind_key_hint(kind, cn),
+                               fill=theme.ACCENT,
                                font=theme.font(theme.F_TINY), tags=(tag,))
-            cv.create_text(x + SKILL_CARD_W / 2, 4 + 76, text=KIND_CN[kind],
-                           fill=theme.TEXT, font=theme.font(theme.F_SMALL, True),
-                           tags=(tag,))
-            cv.create_text(x + SKILL_CARD_W / 2, 4 + 92,
-                           text=self.kind_key_hint(kind, cn),
-                           fill=theme.ACCENT,
-                           font=theme.font(theme.F_TINY), tags=(tag,))
-            cv.tag_bind(tag, "<Button-1>",
-                        lambda e, k=kind: self._skill_press(k))
-            x += SKILL_CARD_W + 10
+                cv.tag_bind(tag, "<Button-1>",
+                            lambda e, k=kind, st=stage: self._skill_press(k, st))
+                x += SKILL_CARD_W + 10
 
-    def _skill_press(self, kind):
+    def _skill_press(self, kind, stage=1):
         if not self.selected_member:
             return
-        self._begin_drag({"type": "new", "kind": kind}, KIND_CN[kind])
+        self._begin_drag({"type": "new", "kind": kind, "stage": stage},
+                         self._stage_label(kind, stage))
+
+    def _stage_label(self, kind, stage):
+        stages = max(1, self._stage_count(self.selected_member, kind))
+        base = KIND_CN.get(kind, "技能")
+        return base if stages <= 1 else "%s %s" % (base, forms.stage_suffix(stage))
+
+    def _stage_count(self, operator, kind):
+        files = self.icons.forms_of(operator).get(kind, [])
+        return max(forms.stages(operator, kind), len(files))
 
     # ---------- 技能轴 ----------
     # ---------- 单条技能轴循环次数 ----------
     def bump_repeat(self, delta):
         axis = self.current_axis()
-        if axis is None or axis.role == ROLE_BURST:
+        if axis is None or axis.role != ROLE_CHARGE:
             return
         axis.repeat = max(1, min(99, axis.repeat_count() + delta))
         self.store.save_axes()
@@ -879,7 +917,7 @@ class Editor:
     def _sync_repeat_controls(self, axis):
         if axis is None:
             return
-        is_charge = axis.role != ROLE_BURST
+        is_charge = axis.role == ROLE_CHARGE
         n = axis.repeat_count() if is_charge else 1
         try:
             self.repeat_label.configure(
@@ -935,6 +973,24 @@ class Editor:
 
     def _node_card(self, cv, node, x, y):
         tag = "nd_%s" % node.id
+        if getattr(node, "kind", "") == KIND_BRANCH:
+            # 分支点画成菱形，双击配置
+            cx, cy = x + NODE_W / 2, y + NODE_H / 2
+            r = min(NODE_W, NODE_H) / 2 - 4
+            cv.create_polygon([(cx, cy - r), (cx + r, cy), (cx, cy + r),
+                               (cx - r, cy)], fill=theme.PANEL_3,
+                              outline=theme.ACCENT, width=2, tags=(tag,))
+            cv.create_text(cx, cy - 12, text="分支", fill=theme.ACCENT,
+                           font=theme.font(theme.F_SMALL, True), tags=(tag,))
+            cv.create_text(cx, cy + 6, text="%d 条" % len(node.options or []),
+                           fill=theme.TEXT_MUTED,
+                           font=theme.font(theme.F_TINY), tags=(tag,))
+            cv.create_text(cx, cy + 22, text="双击设置", fill=theme.TEXT_MUTED,
+                           font=theme.font(theme.F_TINY), tags=(tag,))
+            cv.tag_bind(tag, "<Button-1>", lambda e, n=node: self._node_press(n, e))
+            cv.tag_bind(tag, "<Double-Button-1>",
+                        lambda e, n=node: self.edit_branch(n))
+            return
         rounded_rect(cv, x, y, x + NODE_W, y + NODE_H, r=10,
                      fill=theme.PANEL_2, outline=theme.BORDER, tags=(tag,))
         photo = self.icons.render(node.icon, 52) if node.icon else None
@@ -946,8 +1002,7 @@ class Editor:
         cv.create_text(x + NODE_W / 2, y + 70, text=node.operator[:6], fill=theme.TEXT,
                        font=theme.font(theme.F_SMALL, True), tags=(tag,))
         cv.create_text(x + NODE_W / 2, y + 86,
-                       text="%s · %s" % (KIND_CN.get(node.kind, ""),
-                                         self.key_hint(node)),
+                       text="%s · %s" % (node.label, self.key_hint(node)),
                        fill=theme.TEXT_MUTED, font=theme.font(theme.F_TINY), tags=(tag,))
         cv.tag_bind(tag, "<Button-1>", lambda e, n=node: self._node_press(n, e))
 
@@ -957,12 +1012,12 @@ class Editor:
     def _select_node(self, node_id):
         pass
 
-    def add_node(self, operator, kind, index=None):
+    def add_node(self, operator, kind, index=None, stage=1):
         axis = self.current_axis()
         if not axis or not operator:
             return
-        file = self.icons.icon_for(operator, kind) or ""
-        node = Node(operator=operator, kind=kind, icon=file)
+        file = self.icons.icon_for(operator, kind, stage) or ""
+        node = Node(operator=operator, kind=kind, icon=file, stage=stage)
         if index is None:
             axis.nodes.append(node)
         else:
@@ -987,6 +1042,28 @@ class Editor:
         axis.nodes.pop()
         self.store.save_axes()
         self.refresh_timeline()
+
+    def add_branch_node(self):
+        """在主线末尾加一个分支点，双击它配置分支。"""
+        axis = self.current_axis()
+        if not axis:
+            return
+        node = Node(kind=KIND_BRANCH, options=[])
+        axis.nodes.append(node)
+        self.store.save_axes()
+        self.refresh_timeline()
+
+    def edit_branch(self, node):
+        if node is None or getattr(node, "kind", "") != KIND_BRANCH:
+            return
+        from .branchdialog import BranchDialog
+
+        def apply(options):
+            node.options = options
+            self.store.save_axes()
+            self.refresh_timeline()
+
+        BranchDialog(self.app, node, apply)
 
     # ---------- 拖拽 ----------
     def _begin_drag(self, payload, label, image=None):
@@ -1165,7 +1242,8 @@ class Editor:
         if not armed:
             # 没按够时间（或过早移动）：当作单击，不改顺序
             if drag.get("type") == "new":
-                self.add_node(self.selected_member, drag["kind"])
+                self.add_node(self.selected_member, drag["kind"], None,
+                              drag.get("stage", 1))
             return
 
         if drag.get("type") == "team":
@@ -1194,7 +1272,8 @@ class Editor:
 
         if drag.get("type") == "new":
             if idx is not None:
-                self.add_node(self.selected_member, drag["kind"], idx)
+                self.add_node(self.selected_member, drag["kind"], idx,
+                              drag.get("stage", 1))
             else:
                 self.refresh_timeline()      # 拖到时间轴外：把让出的空位收回来
         elif drag.get("type") == "move":
@@ -1241,8 +1320,8 @@ class Editor:
 
     def _reorder_axis(self, axis, idx):
         rot = self.current_rotation()
-        if not rot or axis.role == ROLE_BURST:
-            return
+        if not rot or axis.role != ROLE_CHARGE:
+            return                       # 爆发轴 / 路线轴不参与播放顺序拖动
         if axis.id not in rot.charge_axes:
             return
         before = {a_id: i for i, a_id in enumerate(rot.charge_axes)}

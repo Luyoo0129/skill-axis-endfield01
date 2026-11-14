@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.model import (Axis, KIND_COMBO, KIND_SKILL, KIND_ULT,  # noqa: E402
                        Node, ROLE_BURST, ROLE_CHARGE, Rotation, Settings,
                        Store, Team)
-from app.player import FINISHED, MATCH, WRONG, Player  # noqa: E402
+from app.player import FINISHED, IGNORED, MATCH, WRONG, Player  # noqa: E402
 
 results = []
 
@@ -431,6 +431,113 @@ def test_axis_repeat():
     check("旧数据缺 repeat 默认 1", Axis.from_dict({"name": "旧"}).repeat == 1)
 
 
+def test_multi_stage():
+    """多段技能：同一颗键分两段按，轴里是两个节点，判定只看干员+种类。"""
+    from app.model import Axis, Node
+
+    n1 = Node(operator="祀", kind=KIND_SKILL, stage=1)
+    n2 = Node(operator="祀", kind=KIND_SKILL, stage=2)
+    check("段号进 label", n1.label == "技能" and n2.label == "技能 2",
+          repr((n1.label, n2.label)))
+    check("段号持久化", Node.from_dict(n2.to_dict()).stage == 2)
+    check("旧数据默认第 1 段", Node.from_dict({"operator": "祀"}).stage == 1)
+    check("段号越界收敛", Node.from_dict({"stage": 99}).stage == 9)
+
+    # 两段用同一颗键：连按两次应各推进一个节点
+    rot_axes = [mk_axis(ROLE_CHARGE, "两段", (KIND_SKILL, KIND_SKILL))]
+    rot = Rotation(name="t", charge_axes=[rot_axes[0].id], burst_axis="",
+                   team=Team(members=["祀", "管理员", "陈千语", "余烬"]))
+    p = Player(rotation=rot, store=FakeStore(rot_axes), settings=Settings())
+    for n in rot_axes[0].nodes:
+        n.operator = "祀"
+    rot_axes[0].nodes[0].stage = 1
+    rot_axes[0].nodes[1].stage = 2
+    p.start()
+    key = p.settings.slot_key(0)
+    r1, _ = p.press(vk=key, hold=False)
+    r2, _ = p.press(vk=key, hold=False)
+    # 两段走完正好一轮结束、回到第一段，所以 cycle 加 1
+    check("两段各按一次都推进",
+          r1 == MATCH and r2 == MATCH and p.cycle == 1 and p.index == 0,
+          repr((r1, r2, p.cycle, p.index)))
+
+    # 段数与图标：祀 战技 2 段；诀 三类都 2 段
+    from app import forms
+    check("祀的战技登记为 2 段", forms.stages("祀", "skill") == 2)
+    check("诀的终结登记为 2 段", forms.stages("诀", "ult") == 2)
+    check("没登记的干员默认 1 段", forms.stages("佩丽卡", "skill") == 1)
+
+
+def test_branch():
+    """分支点：按预设键选路线，走完可选「汇合回主线 / 各走各的」。"""
+    from app.model import KIND_BRANCH, ROLE_ROUTE
+
+    team = ("佩丽卡", "管理员", "陈千语", "余烬")
+
+    def build(merge=True):
+        main = Axis(name="主线", role=ROLE_CHARGE)
+        a1 = Node(operator="佩丽卡", kind=KIND_SKILL)
+        br = Node(kind=KIND_BRANCH, options=[
+            {"operator": "佩丽卡", "kind": KIND_ULT, "axis": "route-a",
+             "merge": merge},
+            {"operator": "余烬", "kind": KIND_COMBO, "axis": "route-b",
+             "merge": merge},
+        ])
+        a2 = Node(operator="管理员", kind=KIND_SKILL)
+        main.nodes = [a1, br, a2]
+
+        route_a = Axis(id="route-a", name="路线 A", role=ROLE_ROUTE,
+                       nodes=[Node(operator="余烬", kind=KIND_SKILL),
+                              Node(operator="陈千语", kind=KIND_ULT)])
+        route_b = Axis(id="route-b", name="路线 B", role=ROLE_ROUTE)
+        store = FakeStore([main, route_a, route_b])
+        store.team = Team(members=list(team))
+        rot = Rotation(name="分支编队", charge_axes=[main.id], burst_axis="",
+                       team=Team(members=list(team)))
+        p = Player(rotation=rot, store=store, settings=Settings())
+        p.start()
+        return p
+
+    # 走到分支点
+    p = build(merge=True)
+    p.press(vk=0x31, hold=False)                 # 佩丽卡技能 -> 分支点
+    check("走到分支点", p.current().kind == KIND_BRANCH, repr(p.current()))
+
+    r, _ = p.press(vk=0x34, hold=False)          # 余烬技能键：不是分支选项
+    check("分支点按错不选路", r == IGNORED and p.route is None, repr((r, p.route)))
+
+    r, _ = p.press(vk=0x31, hold=True)           # 佩丽卡终结 -> 路线 A
+    check("按预设键进入路线", r == MATCH and p.route is not None, repr(r))
+    check("路线第一节点", p.route is not None and p.current().operator == "余烬",
+          repr(p.current()))
+
+    p.press(vk=0x34, hold=False)                 # 路线 A 第 1 个：余烬技能
+    check("路线内推进", p.current() is not None and p.current().operator == "陈千语",
+          repr(p.current()))
+
+    r, _ = p.press(vk=0x33, hold=True)           # 路线 A 第 2 个：陈千语终结
+    check("路线走完汇合回主线",
+          r == MATCH and p.route is None and p.current().operator == "管理员",
+          repr((r, p.route, p.current())))
+
+    # 不汇合：路线走完直接进下一段
+    p2 = build(merge=False)
+    p2.press(vk=0x31, hold=False)
+    p2.press(vk=0x31, hold=True)                 # 进路线 A
+    p2.press(vk=0x34, hold=False)
+    p2.press(vk=0x33, hold=True)                 # 路线 A 走完
+    check("不汇合则离开主线直接下一段",
+          p2.route is None and p2.cycle == 1 and p2.index == 0,
+          repr((p2.route, p2.cycle, p2.index)))
+
+    # 路线轴没配节点：立刻按「汇合」处理，别卡住
+    p3 = build(merge=True)
+    p3.press(vk=0x31, hold=False)
+    p3.press(vk=0x45, hold=False)                # 余烬连携（E）-> 空路线 B
+    check("空路线立即汇合", p3.route is None and p3.current().operator == "管理员",
+          repr((p3.route, p3.current())))
+
+
 def test_skip():
     p, rot, axes, s = mk_player(charge_kinds=((KIND_SKILL, KIND_ULT),))
     p.start()
@@ -582,7 +689,8 @@ def main():
                test_combo_key, test_ult_requires_hold, test_hold_threshold_setting,
                test_infinite, test_wrong_key, test_key_map, test_any_mode,
                test_gamepad, test_pad_ult_modes, test_team_unique, test_move_item,
-               test_axis_repeat, test_skip, test_empty_segment_skipped,
+               test_axis_repeat, test_multi_stage, test_branch, test_skip,
+               test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,
                test_rotation_team_affects_keys, test_rename_rotation,
                test_store_roundtrip, test_settings_keys, test_export_import,

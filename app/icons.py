@@ -120,18 +120,36 @@ class IconStore:
         self._meta = None
 
     # ---------- 干员维度查询 ----------
-    def skills_of(self, cn):
-        """返回 {skill/combo/ult: 文件名}。"""
+    def forms_of(self, cn):
+        """{kind: [文件名, ...]} —— 同一技能有多段时会有多个文件（按 index 顺序）。
+
+        以前按键名存字典，多段的第二张会把第一张覆盖掉，所以只显示一张。
+        """
         out = {}
         if not cn:
             return out
         for entry in self.manifest():
             if entry.get("cn") == cn:
-                out[entry.get("kind", "custom")] = entry.get("file", "")
+                kind = entry.get("kind", "custom")
+                out.setdefault(kind, []).append(entry.get("file", ""))
         return out
 
-    def icon_for(self, cn, kind):
-        return self.skills_of(cn).get(kind, "")
+    def skills_of(self, cn):
+        """返回 {kind: 第一段的文件名}（兼容旧调用）。"""
+        return {k: v[0] for k, v in self.forms_of(cn).items() if v}
+
+    def icon_for(self, cn, kind, stage=1):
+        """第 stage 段的图标；没有单独素材时回退到第一段。"""
+        files = self.forms_of(cn).get(kind) or []
+        if not files:
+            return ""
+        try:
+            i = int(stage) - 1
+        except (TypeError, ValueError):
+            i = 0
+        if 0 <= i < len(files):
+            return files[i]
+        return files[0]
 
     def element_of(self, cn):
         for entry in self.manifest():

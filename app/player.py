@@ -14,7 +14,8 @@ FINISHED = "finished"
 
 IDLE = "idle"
 
-from .model import KIND_COMBO, KIND_SKILL, KIND_ULT  # noqa: E402
+from .model import (KIND_BRANCH, KIND_COMBO, KIND_SKILL, KIND_ULT,  # noqa: E402
+                    Node)
 
 
 class Segment:
@@ -39,6 +40,9 @@ class Player:
         self.done = set()
         self._segments = []
         self.repeat_done = 0        # 当前这一段已经重复走过几遍（充能轴循环用）
+        # 分支：走到分支点后选的路线（None 表示在主线）
+        #   {"axis": Axis, "nodes": [...], "index": 0, "merge": bool, "name": str}
+        self.route = None
         self.rebuild()
 
     # ---------- 结构 ----------
@@ -104,6 +108,7 @@ class Player:
         self.index = 0
         self.done = set()
         self.repeat_done = 0
+        self.route = None
         self._skip_empty()
 
     def _skip_empty(self):
@@ -123,20 +128,36 @@ class Player:
         return len(axis.nodes) if axis else 0
 
     def current(self):
+        if self.route is not None:
+            nodes = self.route["nodes"]
+            i = self.route["index"]
+            return nodes[i] if 0 <= i < len(nodes) else None
         axis = self.current_axis()
         if not axis or self.index >= len(axis.nodes):
             return None
         return axis.nodes[self.index]
 
     def upcoming(self):
+        if self.route is not None:
+            nodes = self.route["nodes"]
+            i = self.route["index"] + 1
+            return nodes[i] if 0 <= i < len(nodes) else None
         axis = self.current_axis()
         if not axis or self.index + 1 >= len(axis.nodes):
             return None
         return axis.nodes[self.index + 1]
 
     def nodes_of_segment(self):
+        if self.route is not None:
+            return list(self.route["nodes"])
         axis = self.current_axis()
         return list(axis.nodes) if axis else []
+
+    def current_axis_obj(self):
+        """悬浮窗显示用：在路线里就是那条路线轴。"""
+        if self.route is not None:
+            return self.route.get("axis")
+        return self.current_axis()
 
     @property
     def cycle_repeat(self):
@@ -156,6 +177,14 @@ class Player:
         node = self.current()
         if node is None:
             return FINISHED, None
+
+        # 分支点：等一个「预设键」，按到哪条就走哪条
+        if node.kind == KIND_BRANCH:
+            opt = self._match_branch(node, vk, button, hold)
+            if opt is None:
+                return IGNORED, None
+            self._start_route(node, opt)
+            return MATCH, node
 
         any_key = getattr(self.settings, "mode", "strict") == "any"
         if any_key or self._matches(node, vk, button, hold):
@@ -229,11 +258,71 @@ class Player:
     def skip(self):
         if self.state != "running" or self.current() is None:
             return False
+        node = self.current()
+        if node.kind == KIND_BRANCH and node.options:
+            # 跳过分支点：默认走第一条
+            self._start_route(node, node.options[0])
+            return True
         self.done.add(self.index)
         self._advance()
         return True
 
+    # ---------- 分支 ----------
+    def _match_branch(self, node, vk, button, hold):
+        """返回第一个命中的分支选项。"""
+        for opt in node.options or []:
+            op = str(opt.get("operator") or "")
+            kind = opt.get("kind") or KIND_SKILL
+            if not op:
+                continue
+            probe = Node(operator=op, kind=kind)
+            if self._matches(probe, vk, button, hold):
+                return opt
+        return None
+
+    def _start_route(self, branch_node, opt):
+        """按到某个分支选项：切到它的路线轴。"""
+        axis = None
+        if self.store is not None:
+            axis = self.store.axis_by_id(opt.get("axis") or "")
+        self.done.add(self.index)
+        nodes = list(axis.nodes) if axis is not None else []
+        self.route = {
+            "axis": axis,
+            "nodes": nodes,
+            "index": 0,
+            "merge": bool(opt.get("merge", True)),
+            "name": axis.name if axis is not None else "空路线",
+        }
+        self._skip_empty_route()
+
+    def _skip_empty_route(self):
+        """路线轴可能没配节点：直接当作走完。"""
+        route = self.route
+        if route is not None and route["index"] >= len(route["nodes"]):
+            self._finish_route()
+
+    def _finish_route(self):
+        merge = bool(self.route and self.route.get("merge", True))
+        self.route = None
+        if merge:
+            # 回到分支点后面的那个节点
+            self.index += 1
+            axis = self.current_axis()
+            if axis is not None and self.index < len(axis.nodes):
+                return
+        # 不汇合，或者主线也走完了：按正常推进处理（进下一段 / 下一轮）
+        self._advance_segment(after_route=True)
+
     def _advance(self):
+        # 路线里推进：走完再看要不要汇合
+        if self.route is not None:
+            self.route["index"] += 1
+            if self.route["index"] < len(self.route["nodes"]):
+                return
+            self._finish_route()
+            return
+
         axis = self.current_axis()
         self.index += 1
         if axis and self.index < len(axis.nodes):
@@ -252,7 +341,10 @@ class Player:
                 self.done = set()
                 return
 
-        # 本段走完 -> 下一段
+        self._advance_segment()
+
+    def _advance_segment(self, after_route=False):
+        """本段结束：进下一段，或整轮结束回到第一段。"""
         self.segment += 1
         self.index = 0
         self.done = set()

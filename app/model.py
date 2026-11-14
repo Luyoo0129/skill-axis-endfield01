@@ -15,15 +15,18 @@ from dataclasses import dataclass, field
 
 ROLE_CHARGE = "charge"
 ROLE_BURST = "burst"
+ROLE_ROUTE = "route"       # 分支路线轴：不进播放顺序，只被分支点引用
 
-ROLE_CN = {ROLE_CHARGE: "充能轴", ROLE_BURST: "爆发轴"}
+ROLE_CN = {ROLE_CHARGE: "充能轴", ROLE_BURST: "爆发轴", ROLE_ROUTE: "路线轴"}
 
 # 技能种类
 KIND_SKILL = "skill"
 KIND_COMBO = "combo"
 KIND_ULT = "ult"
+KIND_BRANCH = "branch"     # 分支点节点（不在 KINDS 里：它不是技能，没有图标）
 KINDS = (KIND_SKILL, KIND_COMBO, KIND_ULT)
-KIND_CN = {KIND_SKILL: "技能", KIND_COMBO: "连携", KIND_ULT: "终结"}
+KIND_CN = {KIND_SKILL: "技能", KIND_COMBO: "连携", KIND_ULT: "终结",
+           KIND_BRANCH: "分支"}
 
 # 技能键位规则（游戏内默认）：
 #   技能   = 1/2/3/4，对应队伍第 1~4 位，短按
@@ -80,23 +83,37 @@ class Node:
     operator: str = ""
     kind: str = KIND_SKILL
     icon: str = ""
+    # 多段技能：第几段（1 起）。同一颗键按两次就是两段，判定只看 operator+kind。
+    stage: int = 1
+    # 分支点专用：可选路线列表
+    #   [{"operator": 触发干员, "kind": 触发种类, "axis": 路线轴 id, "merge": 是否汇合}]
+    options: list = field(default_factory=list)
 
     @property
     def label(self):
-        return KIND_CN.get(self.kind, "技能")
+        base = KIND_CN.get(self.kind, "技能")
+        try:
+            n = int(self.stage or 1)
+        except (TypeError, ValueError):
+            n = 1
+        return base if n <= 1 else "%s %d" % (base, n)
 
     def to_dict(self):
-        return {
+        out = {
             "id": self.id,
             "operator": self.operator,
             "kind": self.kind,
             "icon": self.icon,
+            "stage": max(1, int(self.stage or 1)),
         }
+        if self.options:
+            out["options"] = [dict(o) for o in self.options]
+        return out
 
     @staticmethod
     def from_dict(d):
         kind = d.get("kind")
-        if kind not in KINDS:
+        if kind not in KINDS and kind != KIND_BRANCH:
             # 兼容旧数据：按图标名推断
             icon = d.get("icon", "") or ""
             if "连携" in icon:
@@ -105,11 +122,27 @@ class Node:
                 kind = KIND_ULT
             else:
                 kind = KIND_SKILL
+        try:
+            stage = max(1, min(9, int(d.get("stage") or 1)))
+        except (TypeError, ValueError):
+            stage = 1
+        opts = []
+        for o in d.get("options") or []:
+            if not isinstance(o, dict):
+                continue
+            opts.append({
+                "operator": str(o.get("operator") or ""),
+                "kind": o.get("kind") if o.get("kind") in KINDS else KIND_SKILL,
+                "axis": str(o.get("axis") or ""),
+                "merge": bool(o.get("merge", True)),
+            })
         return Node(
             id=d.get("id") or new_id(),
             operator=d.get("operator", ""),
             kind=kind,
             icon=d.get("icon", ""),
+            stage=stage,
+            options=opts,
         )
 
 
