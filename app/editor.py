@@ -958,12 +958,39 @@ class Editor:
             self._pending_drop = idx
             axis = self.current_axis()
             nodes = list(axis.nodes) if axis else []
+            if self._drag.get("type") == "new":
+                # 从技能栏拖一张新技能进来：只腾位置，没有源节点
+                self._preview_insert(self.timeline, len(nodes), idx,
+                                     lambda i: "nd_%s" % nodes[i].id, 8,
+                                     NODE_W + NODE_GAP)
+                return
             node = self._drag.get("node")
             from_idx = nodes.index(node) if node in nodes else 0
             self._preview_once("move", self.timeline, "nd_%s" % getattr(node, "id", ""))
             self._preview_shift(self.timeline, nodes, from_idx, idx,
                                 lambda i, n: "nd_%s" % n.id, 8,
                                 NODE_W + NODE_GAP)
+
+    def _preview_insert(self, cv, count, gap, tag_of, base, step):
+        """新项目要插进来：把 gap 之后的项目整体右移一格，腾出空位。"""
+        if gap is None:
+            return
+        gap = max(0, min(int(gap), count))
+        groups = []
+        for i in range(count):
+            if i < gap:
+                continue
+            try:
+                box = cv.bbox(tag_of(i))
+            except tk.TclError:
+                continue
+            if not box:
+                continue
+            target = base + (i + 1) * step
+            d = target - box[0]
+            if abs(d) >= 1:
+                groups.append((tag_of(i), d, 0))
+        dragfx.glide(self.root, cv, groups)
 
     def _preview_once(self, key, cv, tag):
         """被拖的东西只藏一次，免得每帧都去改 canvas。"""
@@ -1052,6 +1079,8 @@ class Editor:
         if drag.get("type") == "new":
             if idx is not None:
                 self.add_node(self.selected_member, drag["kind"], idx)
+            else:
+                self.refresh_timeline()      # 拖到时间轴外：把让出的空位收回来
         elif drag.get("type") == "move":
             node = drag["node"]
             if idx is None:
