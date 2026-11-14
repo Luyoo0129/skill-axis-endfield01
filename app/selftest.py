@@ -732,6 +732,86 @@ def test_export_import():
     shutil.rmtree(tmp2, ignore_errors=True)
 
 
+def test_export_roundtrip():
+    """导出/导入要带全所有内容：设置、循环次数、段号、分支卡片与跳转。"""
+    from app.model import KIND_BRANCH
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    t1 = os.path.join(base, "data", "_selftest_tmp9")
+    t2 = os.path.join(base, "data", "_selftest_tmp10")
+    for d in (t1, t2):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d, exist_ok=True)
+
+    store = Store(t1)
+    store.settings.hold_ms = 420
+    store.settings.combo_key = 0x51
+    store.settings.pad_ult_mode = "chord"
+    store.settings.pad_modifier = 0x0200
+    store.settings.opacity = 0.7
+
+    charge = store.axes[0]
+    charge.repeat = 3
+    charge.nodes = [Node(operator="祀", kind=KIND_SKILL, stage=2)]
+    burst = next(a for a in store.axes if a.role == ROLE_BURST)
+    burst.nodes = [Node(kind=KIND_BRANCH, options=[{
+        "trigger": {"operator": "管理员", "kind": KIND_ULT, "stage": 1},
+        "nodes": [Node(operator="余烬", kind=KIND_SKILL)],
+        "next": charge.id,
+    }])]
+    rot = store.active_rotation()
+    rot.set_sequence([charge.id, burst.id])
+    store.save_all()
+
+    data = store.export_dict()
+    check("导出带完整设置",
+          data["settings"].get("hold_ms") == 420
+          and data["settings"].get("pad_ult_mode") == "chord"
+          and data["settings"].get("opacity") == 0.7, repr(data["settings"].get("hold_ms")))
+    check("导出带循环次数", data["axes"][0]["repeat"] == 3
+          if data["axes"][0].get("id") == charge.id else
+          any(a.get("repeat") == 3 for a in data["axes"]))
+    check("导出带段号", any(
+        n.get("stage") == 2 for a in data["axes"] for n in a.get("nodes", [])))
+    check("导出带分支卡片", any(
+        n.get("kind") == KIND_BRANCH and n.get("options")
+        and n["options"][0]["nodes"]
+        for a in data["axes"] for n in a.get("nodes", [])))
+
+    # 替换导入
+    store2 = Store(t2)
+    ok, msg = store2.import_dict(data, merge=False)
+    check("替换导入成功", ok, msg)
+    check("导入后设置跟随", store2.settings.hold_ms == 420
+          and store2.settings.pad_ult_mode == "chord"
+          and store2.settings.opacity == 0.7,
+          repr((store2.settings.hold_ms, store2.settings.pad_ult_mode)))
+    r2 = store2.active_rotation()
+    check("导入后顺序跟随", r2 is not None and r2.sequence() == [charge.id, burst.id],
+          repr(r2.sequence() if r2 else None))
+    a2 = store2.axis_by_id(charge.id)
+    check("导入后循环次数跟随", a2 is not None and a2.repeat == 3)
+    b2 = store2.axis_by_id(burst.id)
+    check("导入后分支卡片跟随",
+          b2 is not None and b2.nodes[0].kind == KIND_BRANCH
+          and len(b2.nodes[0].options[0]["nodes"]) == 1
+          and b2.nodes[0].options[0]["next"] == charge.id)
+
+    # 合并导入：id 冲突要重映射，分支跳转不能断
+    ok2, _ = store2.import_dict(data, merge=True)
+    check("合并导入成功", ok2)
+    alive = {a.id for a in store2.axes}
+    broken = []
+    for axis in store2.axes:
+        for node in axis.nodes:
+            for opt in (node.options or []):
+                nxt = opt.get("next")
+                if nxt and nxt not in alive:
+                    broken.append(nxt)
+    check("合并导入后分支跳转仍指向存在的轴", not broken, repr(broken))
+    for d in (t1, t2):
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_legacy_migration():
     axis = Axis.from_dict({
         "id": "old1", "name": "旧技能轴", "kind": "loop",
@@ -798,7 +878,7 @@ def main():
                test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,
                test_rotation_team_affects_keys, test_rename_rotation,
-               test_store_roundtrip, test_settings_keys, test_export_import,
+               test_store_roundtrip, test_settings_keys, test_export_import, test_export_roundtrip,
                test_legacy_migration, test_assets, test_render, test_fonts):
         try:
             fn()

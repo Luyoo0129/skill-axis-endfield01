@@ -11,6 +11,7 @@
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -804,15 +805,15 @@ class Store:
 
     # ---------- 导入导出 ----------
     def export_dict(self):
+        """整份导出：轴（含分支卡片/循环次数）、编队顺序、队伍、**完整设置**。"""
         return {
             "format": "skill-axis",
-            "version": 3,
+            "version": 4,
+            "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "axes": [a.to_dict() for a in self.axes],
             "rotations": [r.to_dict() for r in self.rotations],
             "team": self.team.to_dict(),
-            "settings": {"combo_key": self.settings.combo_key,
-                         "hold_ms": self.settings.hold_ms,
-                         "pad": dict(self.settings.pad)},
+            "settings": self.settings.to_dict(),
         }
 
     def import_dict(self, data, merge=False):
@@ -825,21 +826,164 @@ class Store:
             return False, "解析失败：%s" % e
         if not axes:
             return False, "文件里没有技能轴"
+
+        # 合并导入时 id 会改，必须把所有引用一起重映射：
+        # 编队 order / 分支「跳到某轴」/ 当前编队
+        id_map = {}
         if merge:
             existing = {a.id for a in self.axes}
             for a in axes:
                 if a.id in existing:
+                    old = a.id
                     a.id = new_id()
+                    id_map[old] = a.id
             self.axes.extend(axes)
             existing_r = {r.id for r in self.rotations}
             for r in rots:
                 if r.id in existing_r:
+                    old = r.id
                     r.id = new_id()
+                    id_map[old] = r.id
             self.rotations.extend(rots)
         else:
             self.axes = axes
             self.rotations = rots or self.rotations
             if "team" in data:
                 self.team = Team.from_dict(data["team"])
+
+        if id_map:
+            self._remap_references(id_map)
+
+        # 设置跟随：导入文件里有的字段就覆盖（旧文件缺的字段保持现状）
+        imported = data.get("settings")
+        if isinstance(imported, dict) and imported:
+            try:
+                fresh = Settings.from_dict(imported)
+            except Exception:  # noqa: BLE001
+                fresh = None
+            if fresh is not None:
+                for key, value in fresh.to_dict().items():
+                    if key in imported:
+                        setattr(self.settings, key, value)
+
+        # 当前编队可能已不存在：兜底选一个
+        if not any(r.id == self.settings.active_rotation for r in self.rotations):
+            self.settings.active_rotation = self.rotations[0].id if self.rotations else ""
+
+        for rot in self.rotations:
+            rot.order = [x for x in rot.sequence() if self.axis_by_id(x)]
+            rot.sync_legacy(self.axis_by_id)
+
         self.save_all()
         return True, "导入 %d 条技能轴、%d 个编队" % (len(axes), len(rots))
+
+    def _remap_references(self, id_map):
+        """把编队顺序和分支跳转里的旧 id 换成新 id。"""
+        for rot in self.rotations:
+            rot.order = [id_map.get(x, x) for x in rot.sequence()]
+        for axis in self.axes:
+            for node in axis.nodes:
+                for opt in (getattr(node, "options", None) or []):
+                    if isinstance(opt, dict) and opt.get("next"):
+                        opt["next"] = id_map.get(opt["next"], opt["next"])
+        if self.settings.active_rotation:
+            self.settings.active_rotation = id_map.get(
+                self.settings.active_rotation, self.settings.active_rotation)
+
+    # ---------- 查询 ----------
+    def axis_by_id(self, axis_id):
+        for a in self.axes:
+            if a.id == axis_id:
+                return a
+        return None
+
+    def rotation_by_id(self, rid):
+        for r in self.rotations:
+            if r.id == rid:
+                return r
+        return None
+
+    def charge_axes(self):
+        return [a for a in self.axes if a.role == ROLE_CHARGE]
+
+    def burst_axes(self):
+        return [a for a in self.axes if a.role == ROLE_BURST]
+
+    def active_rotation(self):
+        r = self.rotation_by_id(self.settings.active_rotation)
+        if r is None and self.rotations:
+            r = self.rotations[0]
+            self.settings.active_rotation = r.id
+        return r
+
+    # ---------- 增删 ----------
+    def add_axis(self, role=ROLE_CHARGE, name=None):
+        if name:
+            axis_name = name
+        elif role == ROLE_BURST:
+            # 爆发轴可以有多条：第一条叫「爆发轴」，之后 爆发轴 · 2、· 3 …
+            existing = [a for a in self.axes if a.role == ROLE_BURST]
+            if not existing:
+                axis_name = "爆发轴"
+            else:
+                axis_name = "爆发轴 · %d" % (len(existing) + 1)
+        else:
+            prefix = DEFAULT_PREFIX.get(role, "技能轴")
+            axis_name = next_numbered_name(
+                [a.name for a in self.axes if a.role == role], prefix)
+        axis = Axis(name=axis_name, role=role)
+        self.axes.append(axis)
+        self.save_axes()
+        return axis
+
+    def delete_axis(self, axis_id):
+        self.axes = [a for a in self.axes if a.id != axis_id]
+        for r in self.rotations:
+            r.order = [x for x in r.order if x != axis_id]
+            r.charge_axes = [x for x in r.charge_axes if x != axis_id]
+            if r.burst_axis == axis_id:
+                r.burst_axis = ""
+            # 分支里「跳到某轴」的目标被删了：退回顺着走
+            for axis in self.axes:
+                for node in axis.nodes:
+                    for opt in (getattr(node, "options", None) or []):
+                        if isinstance(opt, dict) and opt.get("next") == axis_id:
+                            opt["next"] = ""
+        self.save_axes()
+        self.save_rotations()
+
+    def add_rotation(self, name=None):
+        rot = Rotation(name=name or next_numbered_name(
+            [r.name for r in self.rotations], "编队"))
+        # 新编队沿用当前编队的轴顺序，方便接着改
+        active = self.active_rotation()
+        if active is not None:
+            rot.set_sequence(list(active.sequence()))
+            rot.sync_legacy(self.axis_by_id)
+        else:
+            charges = self.charge_axes()
+            bursts = self.burst_axes()
+            rot.set_sequence([a.id for a in charges[:1]] +
+                             [a.id for a in bursts[:1]])
+        rot.team = Team(members=list((active.members() if active
+                                      else self.team.normalized())))
+        self.rotations.append(rot)
+        self.save_rotations()
+        return rot
+
+    def rotation_team(self, rot=None):
+        """当前编队的队伍。"""
+        rot = rot or self.active_rotation()
+        if rot is None:
+            return self.team
+        if not rot.team:
+            rot.team = Team(members=list(self.team.normalized()))
+        return rot.team
+
+    def delete_rotation(self, rid):
+        self.rotations = [r for r in self.rotations if r.id != rid]
+        if self.settings.active_rotation == rid:
+            self.settings.active_rotation = self.rotations[0].id if self.rotations else ""
+            self.save_settings()
+        self.save_rotations()
+

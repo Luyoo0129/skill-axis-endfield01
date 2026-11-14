@@ -58,6 +58,7 @@ class Overlay:
         self._pulse_on = False
         self._hint = ""
         self._hint_until = 0
+        self._branch_hint_id = None
         self._drag = None
         self._resize = None
         self._opacity_drag = False
@@ -221,6 +222,104 @@ class Overlay:
         if rot is not None:
             return rot.members()
         return self.app.store.team.normalized()
+
+    def _maybe_branch_hint(self):
+        """走到分支点：顶部闪一行「按 X 走 A / 按 Y 走 B」，同一次停留只提示一次。"""
+        try:
+            node = self.app.player.current()
+        except Exception:  # noqa: BLE001
+            return
+        is_branch = getattr(node, "kind", "") == "branch"
+        if not is_branch:
+            self._branch_hint_id = None
+            return
+        if node.id == self._branch_hint_id:
+            return
+        text = self._branch_hint_text(node)
+        self._branch_hint_id = node.id
+        if text:
+            self._hint = text
+            self._hint_until = time.time() + 2.6
+
+    def _branch_trigger_items(self, node):
+        """分支的触发项：[(图标文件, 键位文字, 干员, 种类中文)]，按选项顺序。"""
+        from .model import KIND_CN, option_trigger
+
+        out = []
+        for opt in (getattr(node, "options", None) or []):
+            trig = option_trigger(opt)
+            op = str(trig.get("operator") or "")
+            kind = trig.get("kind") or "skill"
+            if not op:
+                continue
+            icon = self.app.icons.icon_for(op, kind, trig.get("stage") or 1) or ""
+            out.append((icon, self._trigger_key(op, kind),
+                        op, KIND_CN.get(kind, "战技"), kind))
+        return out
+
+    def _trigger_key(self, operator, kind):
+        s = self.app.store.settings
+        if kind == "combo":
+            return vk_label(s.combo_key) if s.combo_key else "E"
+        try:
+            slot = self.team_members().index(operator)
+        except ValueError:
+            return "?"
+        digit = s.slot_key(slot)
+        if digit is None:
+            return "?"
+        label = vk_label(digit)
+        return ("长" + label) if kind == "ult" else label
+
+    def _draw_branch_cell(self, d, node, cx, icon_cy, ic, cur, past):
+        """一个格里并排两个触发技能的小图标，上面写「分支」。"""
+        items = self._branch_trigger_items(node)
+        if not items:
+            k = ic * 0.38
+            self._shape(d, (cx - k, icon_cy - k, cx + k, icon_cy + k),
+                        r=4 * self._sc, fill=theme.PANEL_3,
+                        outline=theme.ACCENT, width=2)
+            self._text(d, cx, icon_cy, "分支", theme.F_TINY, theme.ACCENT,
+                       anchor="mm", max_w=ic - 2)
+            return
+
+        shown = items[:2]
+        size = ic * (0.62 if len(shown) > 1 else 0.82)
+        gap = max(2, int(2 * self._sc))
+        total = size * len(shown) + gap * (len(shown) - 1)
+        left = cx - total / 2
+        for i, item in enumerate(shown):
+            icon_file = item[0]
+            im = (self.app.icons.render_pil(icon_file, int(size * SS))
+                  if icon_file else None)
+            if im is not None and past:
+                im = im.copy()
+                r, g, b, a = im.split()
+                a = a.point(lambda v: int(v * 0.35))
+                im = Image.merge("RGBA", (r, g, b, a))
+            self._paste(im, left + size / 2 + i * (size + gap), icon_cy - 1)
+        # 顶部小字「分支」+ 琥珀底栏，和普通节点区分开
+        top = icon_cy - size / 2 - 7 * self._sc
+        self._text(d, cx, top, "分支", theme.F_TINY,
+                   theme.ACCENT if cur else theme.ACCENT_SOFT,
+                   anchor="mm", max_w=ic)
+        self._shape(d, (cx - ic / 2, icon_cy + size / 2 + 1,
+                        cx + ic / 2, icon_cy + size / 2 + 1 + max(1, 2 * self._sc)),
+                    r=1 * self._sc,
+                    fill=theme.ACCENT if cur else theme.ACCENT_SOFT)
+
+    def _branch_hint_text(self, node):
+        """分支成为当前节点时顶部闪的那行提醒。"""
+        items = self._branch_trigger_items(node)
+        if not items:
+            return ""
+        parts = []
+        for item in items:
+            _icon, key, op, kind_cn = item[0], item[1], item[2], item[3]
+            kind = item[4] if len(item) > 4 else "skill"
+            verb = "长按 %s" % key[-1] if kind == "ult" else "按 %s" % key
+            parts.append("%s 走 %s·%s" % (verb, op, kind_cn))
+        return "选路：" + " / ".join(parts)
 
     def _branch_keys(self, node):
         """分支点下面那行：把每条分支的触发键压成「1/E」这种。"""
@@ -428,6 +527,7 @@ class Overlay:
         if not self.exists():
             return
         self._ensure_layered()
+        self._maybe_branch_hint()
 
         W, H, head, ic, slot, pad, nodes, visible = self._layout()
         if W != self._W or H != self._H:
@@ -628,26 +728,22 @@ class Overlay:
                             r=8 * self._sc, fill=None, outline=theme.ACCENT,
                             width=2)
 
-            im = self.app.icons.render_pil(node.icon, int(ic * SS)) if node.icon else None
-            if im is not None and past:
-                im = im.copy()
-                r, g, b, a = im.split()
-                a = a.point(lambda v: int(v * 0.35))
-                im = Image.merge("RGBA", (r, g, b, a))
-            if im is not None:
+            if getattr(node, "kind", "") == "branch":
+                # 分支格：两个触发技能各自的图标（和前面的技能图标同一套）
+                self._draw_branch_cell(d, node, cx, icon_cy, ic, cur, past)
+                col = theme.ACCENT if cur else (theme.TEXT_MUTED if past else theme.TEXT_DIM)
+                label = self._branch_keys(node)
+            else:
+                im = (self.app.icons.render_pil(node.icon, int(ic * SS))
+                      if node.icon else None)
+                if im is not None and past:
+                    im = im.copy()
+                    r, g, b, a = im.split()
+                    a = a.point(lambda v: int(v * 0.35))
+                    im = Image.merge("RGBA", (r, g, b, a))
                 self._paste(im, cx, icon_cy)
-            elif getattr(node, "kind", "") == "branch":
-                # 分支点没有图标：画个菱形占位，下面列可选键
-                k = ic * 0.38
-                self._shape(d, (cx - k, icon_cy - k, cx + k, icon_cy + k),
-                            r=4 * self._sc, fill=theme.PANEL_3,
-                            outline=theme.ACCENT, width=2)
-                self._text(d, cx, icon_cy, "分支", theme.F_TINY, theme.ACCENT,
-                           anchor="mm", max_w=slot - 2)
-
-            col = theme.ACCENT if cur else (theme.TEXT_MUTED if past else theme.TEXT_DIM)
-            label = (self._branch_keys(node)
-                     if getattr(node, "kind", "") == "branch" else self.key_hint(node))
+                col = theme.ACCENT if cur else (theme.TEXT_MUTED if past else theme.TEXT_DIM)
+                label = self.key_hint(node)
             self._text(d, cx, key_y, label, theme.F_TINY, col,
                        anchor="mm", bold=cur, max_w=slot - 2)
             x += slot
