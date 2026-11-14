@@ -292,18 +292,12 @@ class Overlay:
         s = self.app.store.settings
         if self._use_pad():
             if kind == "combo":
-                return button_name(s.pad_combo, s.gamepad_scheme)
+                return self._pad_action_label(KIND_COMBO, 0)
             try:
                 slot = self.team_members().index(operator)
             except ValueError:
                 return "?"
-            letter = button_name(s.pad_slot_key(slot), s.gamepad_scheme) or "?"
-            if kind == "ult":
-                if getattr(s, "pad_ult_mode", "hold") == "chord":
-                    return "%s+%s" % (button_name(s.pad_combo, s.gamepad_scheme),
-                                      letter)
-                return "长" + letter
-            return letter
+            return self._pad_action_label(kind, slot)
         if kind == "combo":
             return vk_label(s.combo_key) if s.combo_key else "E"
         try:
@@ -385,6 +379,25 @@ class Overlay:
             out.append(("长" + label) if kind == KIND_ULT else label)
         return "/".join(out) if out else "选路"
 
+    def _pad_names(self):
+        s = self.app.store.settings
+        scheme = s.gamepad_scheme
+        return (button_name(s.pad_modifier, scheme) or "LB",
+                button_name(s.pad_combo, scheme) or "RB",
+                s)
+
+    def _pad_action_label(self, kind, slot):
+        """手柄按键显示：战技 LB+X；连携 RB；终结按设置的两种风格。"""
+        mod, combo, s = self._pad_names()
+        if kind == KIND_COMBO:
+            return combo
+        letter = button_name(s.pad_slot_key(slot), s.gamepad_scheme) or "?"
+        if kind == KIND_ULT:
+            if getattr(s, "pad_ult_mode", "hold") == "chord":
+                return "%s+%s+%s" % (mod, combo, letter)   # LB+RB+X
+            return "%s+长%s" % (mod, letter)               # LB+长X
+        return "%s+%s" % (mod, letter)                     # LB+X
+
     def _use_pad(self):
         """现在是否该按手柄显示：启用手柄监听 + 确实连上了。"""
         try:
@@ -400,20 +413,12 @@ class Overlay:
             return "选路"
         if self._use_pad():
             if node.kind == KIND_COMBO:
-                return button_name(s.pad_combo, s.gamepad_scheme)
+                return self._pad_action_label(KIND_COMBO, 0)
             try:
                 slot = self.team_members().index(node.operator)
             except ValueError:
                 return "?"
-            letter = button_name(s.pad_slot_key(slot), s.gamepad_scheme)
-            if not letter:
-                return "?"
-            if node.kind == KIND_ULT:
-                if getattr(s, "pad_ult_mode", "hold") == "chord":
-                    return "%s+%s" % (button_name(s.pad_combo, s.gamepad_scheme),
-                                      letter)
-                return "长" + letter
-            return letter
+            return self._pad_action_label(node.kind, slot)
         if node.kind == KIND_COMBO:
             return vk_label(s.combo_key) if s.combo_key else "—"
         try:

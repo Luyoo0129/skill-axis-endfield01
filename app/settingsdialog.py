@@ -92,28 +92,12 @@ class SettingsDialog:
         # ---- 手柄（照游戏内规则）----
         box3 = self._card(body, "手柄", self._pad_rule_text())
 
-        self.pad_btns = {}
-
-        def add_row(key, label, value):
-            r = tk.Frame(box3, bg=theme.PANEL)
-            r.pack(fill="x", padx=8, pady=3)
-            tk.Label(r, text=label, bg=theme.PANEL, fg=theme.TEXT_DIM,
-                     width=8, anchor="w",
-                     font=theme.font(theme.F_SMALL)).pack(side="left")
-            pb = tk.Button(r, text=value, bg=theme.PANEL_2, fg=theme.TEXT,
-                           activebackground=theme.PANEL_3,
-                           activeforeground=theme.TEXT, relief="flat", bd=0,
-                           highlightthickness=1, highlightbackground=theme.BORDER,
-                           cursor="hand2", font=theme.font(theme.F_SMALL),
-                           command=lambda k=key: self._bind_pad_key(k))
-            pb.pack(side="left", padx=(6, 0), ipady=2, expand=True, fill="x")
-            self.pad_btns[key] = pb
-
-        add_row("modifier", "修饰键", self._pad_name(self.s.pad_modifier))
-        add_row("combo", "连携技", self._pad_name(self.s.pad_combo))
-        for _i in range(4):
-            add_row("slot%d" % _i, "槽位 %d" % (_i + 1),
-                    self._pad_name(self.s.pad_slot_key(_i)))
+        # 手柄按键是固定默认（照游戏内规则），这里只展示、不给改
+        fixed = tk.Frame(box3, bg=theme.PANEL)
+        fixed.pack(fill="x", padx=8, pady=(2, 4))
+        tk.Label(fixed, text=self._pad_fixed_text(), bg=theme.PANEL,
+                 fg=theme.TEXT_MUTED, font=theme.font(theme.F_TINY),
+                 anchor="w", justify="left").pack(fill="x")
 
         # ---- 终结技触发风格（要跟游戏内设置选的那一种对齐）----
         tk.Frame(box3, bg=theme.BORDER, height=1).pack(fill="x", padx=8, pady=(8, 4))
@@ -174,6 +158,15 @@ class SettingsDialog:
     def _pad_name(self, bit):
         return button_name(bit, self.s.gamepad_scheme) if bit else "未设置"
 
+    def _pad_fixed_text(self):
+        """手柄按键固定不可改：只把当前默认写出来。"""
+        mod = self._pad_name(self.s.pad_modifier)
+        combo = self._pad_name(self.s.pad_combo)
+        letters = " / ".join(self._pad_name(self.s.pad_slot_key(i)) or "?"
+                             for i in range(4))
+        return ("固定按键（不可改）：连携 %s　战技 %s + %s　槽位 %s → 队伍 1~4"
+                % (combo, mod, letters, letters))
+
     def _pad_rule_text(self):
         """手柄卡片的副标题：跟着终结技风格变，别让人对着旧文案配键。"""
         mod = self._pad_name(self.s.pad_modifier)
@@ -195,7 +188,7 @@ class SettingsDialog:
                 % (self._pad_name(self.s.pad_modifier), int(self.s.hold_ms)))
 
     def _refresh_buttons(self):
-        for key, pb in self.pad_btns.items():
+        for key, pb in getattr(self, "pad_btns", {}).items():
             if key == "modifier":
                 pb.configure(text=self._pad_name(self.s.pad_modifier))
             elif key == "combo":
@@ -214,7 +207,7 @@ class SettingsDialog:
         self.store.save_settings()
 
     def _bind_pad_key(self, key):
-        pb = self.pad_btns.get(key)
+        pb = getattr(self, "pad_btns", {}).get(key)
         if pb is None:
             return
         pb.configure(text="按下手柄键…", fg=theme.ACCENT)
