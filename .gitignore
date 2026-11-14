@@ -12,9 +12,7 @@ data/rotations.json
 data/team.json
 data/settings.json
 
-# 游戏素材：版权归鹰角，不入库；用 tools/fetch_*.py 自行下载
-data/icons/
-data/portraits/
+# 游戏素材：已随仓库提供（如需重新抓取可跑 tools/fetch_*.py）
 
 # 本地截图/预览（含游戏素材，也很大）
 shots/
