@@ -485,73 +485,117 @@ def test_multi_stage():
 
 
 def test_branch():
-    """分支点：按预设键选路线，走完可选「汇合回主线 / 各走各的」。"""
-    from app.model import KIND_BRANCH, ROLE_ROUTE
+    """分支点：触发卡决定走哪条；分支自带卡片；走完可顺走或跳到指定轴。"""
+    from app.model import KIND_BRANCH, blank_option
 
     team = ("佩丽卡", "管理员", "陈千语", "余烬")
 
-    def build(merge=True):
+    def build(next_to_burst=False):
+        burst = Axis(name="爆发轴", role=ROLE_BURST,
+                     nodes=[Node(operator="余烬", kind=KIND_ULT)])
         main = Axis(name="主线", role=ROLE_CHARGE)
-        a1 = Node(operator="佩丽卡", kind=KIND_SKILL)
         br = Node(kind=KIND_BRANCH, options=[
-            {"operator": "佩丽卡", "kind": KIND_ULT, "axis": "route-a",
-             "merge": merge},
-            {"operator": "余烬", "kind": KIND_COMBO, "axis": "route-b",
-             "merge": merge},
+            {"trigger": {"operator": "佩丽卡", "kind": KIND_ULT, "stage": 1},
+             "nodes": [Node(operator="余烬", kind=KIND_SKILL),
+                       Node(operator="陈千语", kind=KIND_ULT)],
+             "next": (burst.id if next_to_burst else "")},
+            blank_option("余烬", KIND_COMBO),
         ])
-        a2 = Node(operator="管理员", kind=KIND_SKILL)
-        main.nodes = [a1, br, a2]
-
-        route_a = Axis(id="route-a", name="路线 A", role=ROLE_ROUTE,
-                       nodes=[Node(operator="余烬", kind=KIND_SKILL),
-                              Node(operator="陈千语", kind=KIND_ULT)])
-        route_b = Axis(id="route-b", name="路线 B", role=ROLE_ROUTE)
-        store = FakeStore([main, route_a, route_b])
+        main.nodes = [Node(operator="佩丽卡", kind=KIND_SKILL), br,
+                      Node(operator="管理员", kind=KIND_SKILL)]
+        store = FakeStore([main, burst])
         store.team = Team(members=list(team))
-        rot = Rotation(name="分支编队", charge_axes=[main.id], burst_axis="",
-                       team=Team(members=list(team)))
+        rot = Rotation(name="分支编队", team=Team(members=list(team)))
+        rot.set_sequence([main.id, burst.id])
         p = Player(rotation=rot, store=store, settings=Settings())
         p.start()
-        return p
+        return p, burst
 
-    # 走到分支点
-    p = build(merge=True)
-    p.press(vk=0x31, hold=False)                 # 佩丽卡技能 -> 分支点
+    p, burst = build()
+    p.press(vk=0x31, hold=False)                 # 佩丽卡战技 -> 分支点
     check("走到分支点", p.current().kind == KIND_BRANCH, repr(p.current()))
 
-    r, _ = p.press(vk=0x34, hold=False)          # 余烬技能键：不是分支选项
+    r, _ = p.press(vk=0x33, hold=False)          # 陈千语战技：不是任何触发卡
     check("分支点按错不选路", r == IGNORED and p.route is None, repr((r, p.route)))
 
-    r, _ = p.press(vk=0x31, hold=True)           # 佩丽卡终结 -> 路线 A
-    check("按预设键进入路线", r == MATCH and p.route is not None, repr(r))
-    check("路线第一节点", p.route is not None and p.current().operator == "余烬",
+    r, _ = p.press(vk=0x31, hold=True)           # 佩丽卡终结 = 第一条的触发卡
+    check("按触发卡进入分支", r == MATCH and p.route is not None, repr(r))
+    check("分支第一张卡", p.route is not None and p.current().operator == "余烬",
           repr(p.current()))
 
-    p.press(vk=0x34, hold=False)                 # 路线 A 第 1 个：余烬技能
-    check("路线内推进", p.current() is not None and p.current().operator == "陈千语",
+    p.press(vk=0x34, hold=False)
+    check("分支内推进", p.current() is not None and p.current().operator == "陈千语",
           repr(p.current()))
 
-    r, _ = p.press(vk=0x33, hold=True)           # 路线 A 第 2 个：陈千语终结
-    check("路线走完汇合回主线",
+    r, _ = p.press(vk=0x33, hold=True)
+    check("顺走：回主线下一节点",
           r == MATCH and p.route is None and p.current().operator == "管理员",
           repr((r, p.route, p.current())))
 
-    # 不汇合：路线走完直接进下一段
-    p2 = build(merge=False)
+    # 走完跳到爆发轴
+    p2, burst2 = build(next_to_burst=True)
     p2.press(vk=0x31, hold=False)
-    p2.press(vk=0x31, hold=True)                 # 进路线 A
+    p2.press(vk=0x31, hold=True)
     p2.press(vk=0x34, hold=False)
-    p2.press(vk=0x33, hold=True)                 # 路线 A 走完
-    check("不汇合则离开主线直接下一段",
-          p2.route is None and p2.cycle == 1 and p2.index == 0,
-          repr((p2.route, p2.cycle, p2.index)))
+    p2.press(vk=0x33, hold=True)
+    check("走完直接跳到爆发轴",
+          p2.route is None and p2.current_axis() is burst2,
+          repr((p2.route, p2.current_axis() and p2.current_axis().name)))
+    check("跳到爆发轴后从第一个节点开始",
+          p2.current() is not None and p2.current().operator == "余烬",
+          repr(p2.current()))
 
-    # 路线轴没配节点：立刻按「汇合」处理，别卡住
-    p3 = build(merge=True)
+    # 空分支：立刻按「顺走」处理
+    p3, _ = build()
     p3.press(vk=0x31, hold=False)
-    p3.press(vk=0x45, hold=False)                # 余烬连携（E）-> 空路线 B
-    check("空路线立即汇合", p3.route is None and p3.current().operator == "管理员",
+    p3.press(vk=0x45, hold=False)                # 余烬连携（E）-> 空分支
+    check("空分支立即顺走", p3.route is None and p3.current().operator == "管理员",
           repr((p3.route, p3.current())))
+
+
+def test_axis_order():
+    """充能轴/爆发轴可以混排、多条爆发轴；顺序按 rot.order。"""
+    main1 = Axis(name="充能轴 · 1", role=ROLE_CHARGE)
+    burst1 = Axis(name="爆发轴", role=ROLE_BURST)
+    main2 = Axis(name="充能轴 · 2", role=ROLE_CHARGE)
+    burst2 = Axis(name="爆发轴 · 2", role=ROLE_BURST)
+    for a in (main1, burst1, main2, burst2):
+        a.nodes = [Node(operator="佩丽卡", kind=KIND_SKILL)]
+    store = FakeStore([main1, burst1, main2, burst2])
+    store.team = Team(members=["佩丽卡", "管理员", "陈千语", "余烬"])
+    rot = Rotation(name="混排", team=Team(members=store.team.normalized()))
+    rot.set_sequence([main1.id, burst1.id, main2.id, burst2.id])
+    rot.sync_legacy(store.axis_by_id)
+    check("编队顺序按 order", rot.sequence() == [main1.id, burst1.id, main2.id, burst2.id],
+          repr(rot.sequence()))
+    check("旧字段同步：充能轴只含充能",
+          rot.charge_axes == [main1.id, main2.id], repr(rot.charge_axes))
+    check("旧字段同步：burst_axis 取最后一条爆发轴",
+          rot.burst_axis == burst2.id, repr(rot.burst_axis))
+
+    p = Player(rotation=rot, store=store, settings=Settings())
+    p.start()
+    names = [s.axis.name for s in p.segments]
+    check("段顺序 = 混排顺序",
+          names == ["充能轴 · 1", "爆发轴", "充能轴 · 2", "爆发轴 · 2"], repr(names))
+    check("爆发轴也能有多个段",
+          sum(1 for s in p.segments if s.role == "burst") == 2)
+
+    # 存盘再读回，顺序不丢
+    tmp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "data", "_selftest_tmp8")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    store2 = Store(tmp)
+    store2.axes = [main1, burst1, main2, burst2]
+    store2.rotations = [rot]
+    store2.settings.active_rotation = rot.id
+    store2.save_axes(); store2.save_rotations(); store2.save_settings()
+    store3 = Store(tmp)
+    rot3 = store3.active_rotation()
+    check("混排顺序持久化", rot3.sequence() == [main1.id, burst1.id, main2.id, burst2.id],
+          repr(rot3.sequence()))
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_default_names():
@@ -585,14 +629,11 @@ def test_default_names():
           a1.name == "充能轴 · 3" and a2.name == "充能轴 · 4",
           repr((a1.name, a2.name)))
 
-    r1 = store.add_axis(ROLE_ROUTE)
-    r2 = store.add_axis(ROLE_ROUTE)
-    check("新建路线轴依次编号",
-          r1.name == "路线 · 1" and r2.name == "路线 · 2",
-          repr((r1.name, r2.name)))
-
-    b = store.add_axis(ROLE_BURST)
-    check("新建爆发轴固定叫「爆发轴」", b.name == "爆发轴", repr(b.name))
+    b1 = store.add_axis(ROLE_BURST)
+    b2 = store.add_axis(ROLE_BURST)
+    check("已有「爆发轴」时新建顺延为「爆发轴 · 2」",
+          b1.name == "爆发轴 · 2", repr(b1.name))
+    check("再建一条为「爆发轴 · 3」", b2.name == "爆发轴 · 3", repr(b2.name))
 
     rot = store.add_rotation()
     check("新建编队依次编号", rot.name == "编队 · 2", repr(rot.name))
@@ -638,7 +679,9 @@ def test_store_roundtrip():
         check("技能轴类型持久化", found[0].role == ROLE_CHARGE)
 
     rot = store2.active_rotation()
-    check("编队持久化", rot is not None and len(rot.charge_axes) == 2)
+    check("编队持久化（示例 2 条 + 新增 1 条充能轴）",
+          rot is not None and len(rot.charge_axes) == 3
+          and axis.id in rot.sequence(), repr((rot.charge_axes if rot else None)))
 
     store2.team = Team(members=["A", "B", "C", "D"])
     store2.save_team()
@@ -750,7 +793,7 @@ def main():
                test_combo_key, test_ult_requires_hold, test_hold_threshold_setting,
                test_infinite, test_wrong_key, test_key_map, test_any_mode,
                test_gamepad, test_pad_ult_modes, test_team_unique, test_move_item,
-               test_axis_repeat, test_multi_stage, test_branch, test_default_names,
+               test_axis_repeat, test_multi_stage, test_branch, test_axis_order, test_default_names,
                test_skip,
                test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,

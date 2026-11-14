@@ -52,18 +52,22 @@ class Player:
         self.reset()
 
     def rebuild(self):
-        """把编队展开成 [充能轴..., 爆发轴] 的段列表。"""
+        """把编队顺序展开成段列表：充能轴和爆发轴可以是任意顺序、任意多条。"""
         self._segments = []
         if not self.rotation or not self.store:
             return
-        charges = [self.store.axis_by_id(a) for a in self.rotation.charge_axes]
-        charges = [a for a in charges if a is not None]
-        total = len(charges)
-        for i, axis in enumerate(charges, 1):
-            self._segments.append(Segment(axis, "charge", i, total))
-        burst = self.store.axis_by_id(self.rotation.burst_axis)
-        if burst is not None:
-            self._segments.append(Segment(burst, "burst", 0, total))
+        ids = self.rotation.sequence()
+        axes = [self.store.axis_by_id(a) for a in ids]
+        axes = [a for a in axes if a is not None]
+        total_charge = sum(1 for a in axes if a.role == "charge")
+        charge_no = 0
+        for axis in axes:
+            if axis.role == "burst":
+                self._segments.append(Segment(axis, "burst", 0, total_charge))
+            else:
+                charge_no += 1
+                self._segments.append(Segment(axis, "charge", charge_no,
+                                              total_charge))
 
     @property
     def segments(self):
@@ -269,49 +273,56 @@ class Player:
 
     # ---------- 分支 ----------
     def _match_branch(self, node, vk, button, hold):
-        """返回第一个命中的分支选项。"""
+        """返回第一个命中的分支选项（触发卡与普通节点同一套按键判定）。"""
+        from .model import option_trigger
         for opt in node.options or []:
-            op = str(opt.get("operator") or "")
-            kind = opt.get("kind") or KIND_SKILL
+            trig = option_trigger(opt)
+            op = str(trig.get("operator") or "")
             if not op:
                 continue
-            probe = Node(operator=op, kind=kind)
+            probe = Node(operator=op, kind=trig.get("kind") or KIND_SKILL)
             if self._matches(probe, vk, button, hold):
                 return opt
         return None
 
     def _start_route(self, branch_node, opt):
-        """按到某个分支选项：切到它的路线轴。"""
-        axis = None
-        if self.store is not None:
-            axis = self.store.axis_by_id(opt.get("axis") or "")
+        """按到触发卡：进入这条分支，后面就是它自己的卡片。"""
+        from .model import option_nodes
         self.done.add(self.index)
-        nodes = list(axis.nodes) if axis is not None else []
+        nodes = [n for n in option_nodes(opt) if n is not None]
         self.route = {
-            "axis": axis,
+            "axis": None,
             "nodes": nodes,
             "index": 0,
-            "merge": bool(opt.get("merge", True)),
-            "name": axis.name if axis is not None else "空路线",
+            "next": str((opt or {}).get("next") or ""),
+            "name": "分支",
         }
         self._skip_empty_route()
 
     def _skip_empty_route(self):
-        """路线轴可能没配节点：直接当作走完。"""
+        """分支可能还没排卡片：直接当作走完。"""
         route = self.route
         if route is not None and route["index"] >= len(route["nodes"]):
             self._finish_route()
 
     def _finish_route(self):
-        merge = bool(self.route and self.route.get("merge", True))
+        next_id = str((self.route or {}).get("next") or "")
         self.route = None
-        if merge:
-            # 回到分支点后面的那个节点
-            self.index += 1
-            axis = self.current_axis()
-            if axis is not None and self.index < len(axis.nodes):
-                return
-        # 不汇合，或者主线也走完了：按正常推进处理（进下一段 / 下一轮）
+        if next_id:
+            # 走完直接跳到指定轴（可以是爆发轴）
+            for i, seg in enumerate(self._segments):
+                if seg.axis.id == next_id:
+                    self.segment = i
+                    self.index = 0
+                    self.done = set()
+                    self.repeat_done = 0
+                    self._skip_empty()
+                    return
+            # 目标轴找不到：退回顺着走
+        self.index += 1
+        axis = self.current_axis()
+        if axis is not None and self.index < len(axis.nodes):
+            return
         self._advance_segment(after_route=True)
 
     def _advance(self):

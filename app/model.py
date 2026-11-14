@@ -98,6 +98,58 @@ def new_id():
     return uuid.uuid4().hex[:12]
 
 
+# 分支选项（2026-11-14 改成「卡片化」）：
+#   trigger  触发卡：下一次按的这颗技能决定走这条分支   {"operator","kind","stage"}
+#   nodes    这条分支自己的技能卡（直接内嵌在分支里，不再引用路线轴）
+#   next     走完去哪："" = 顺着主线继续；否则是目标轴的 id（可以是爆发轴）
+def option_trigger(option):
+    trig = (option or {}).get("trigger") or {}
+    return {
+        "operator": str(trig.get("operator") or (option or {}).get("operator") or ""),
+        "kind": (trig.get("kind") if trig.get("kind") in KINDS
+                 else ((option or {}).get("kind") if (option or {}).get("kind") in KINDS
+                       else KIND_SKILL)),
+        "stage": max(1, min(9, int(trig.get("stage") or 1))),
+    }
+
+
+def option_nodes(option):
+    return list((option or {}).get("nodes") or [])
+
+
+def option_to_dict(option):
+    return {
+        "trigger": dict(option_trigger(option)),
+        "nodes": [n.to_dict() for n in option_nodes(option)],
+        "next": str((option or {}).get("next") or ""),
+    }
+
+
+def option_from_dict(d):
+    """兼容两代格式：旧 {operator, kind, axis, merge} 与新 {trigger, nodes, next}。"""
+    if "trigger" in d or "nodes" in d or "next" in d:
+        nodes = []
+        for raw in d.get("nodes") or []:
+            if isinstance(raw, dict):
+                nodes.append(Node.from_dict(raw))
+        return {
+            "trigger": option_trigger(d),
+            "nodes": nodes,
+            "next": str(d.get("next") or ""),
+        }
+    return {
+        "trigger": option_trigger(d),
+        "nodes": [],                                   # 旧路线轴的内容由 Store 迁移
+        "next": "",
+        "_legacy_axis": str(d.get("axis") or ""),
+    }
+
+
+def blank_option(operator="", kind=KIND_SKILL, stage=1):
+    return {"trigger": {"operator": operator, "kind": kind, "stage": stage},
+            "nodes": [], "next": ""}
+
+
 @dataclass
 class Node:
     id: str = field(default_factory=new_id)
@@ -128,7 +180,7 @@ class Node:
             "stage": max(1, int(self.stage or 1)),
         }
         if self.options:
-            out["options"] = [dict(o) for o in self.options]
+            out["options"] = [option_to_dict(o) for o in self.options]
         return out
 
     @staticmethod
@@ -151,12 +203,7 @@ class Node:
         for o in d.get("options") or []:
             if not isinstance(o, dict):
                 continue
-            opts.append({
-                "operator": str(o.get("operator") or ""),
-                "kind": o.get("kind") if o.get("kind") in KINDS else KIND_SKILL,
-                "axis": str(o.get("axis") or ""),
-                "merge": bool(o.get("merge", True)),
-            })
+            opts.append(option_from_dict(o))
         return Node(
             id=d.get("id") or new_id(),
             operator=d.get("operator", ""),
@@ -310,21 +357,51 @@ class Axis:
 
 @dataclass
 class Rotation:
-    """编队：先按顺序打完所有充能轴，再打爆发轴，然后无限重复。
+    """编队 = 一串有序技能轴（充能轴 / 爆发轴可以混排、都可以有多条），无限循环。
 
-    每个编队有自己独立的队伍。
+    `order` 是唯一可信的播放顺序；`charge_axes` / `burst_axis` 只保留给旧数据和
+    旧代码读取（保存时会按 order 重新推导）。
     """
     id: str = field(default_factory=new_id)
     name: str = "新编队"
     charge_axes: list = field(default_factory=list)
     burst_axis: str = ""
     team: Team = field(default_factory=Team)
+    order: list = field(default_factory=list)
 
-    def axis_ids(self):
+    def sequence(self):
+        """播放顺序（轴 id 列表）。旧数据没有 order 时按「充能轴 + 爆发轴」兜底。"""
+        if self.order:
+            return [x for x in self.order if x]
         ids = [a for a in self.charge_axes if a]
         if self.burst_axis:
             ids.append(self.burst_axis)
         return ids
+
+    def set_sequence(self, ids):
+        self.order = [x for x in (ids or []) if x]
+        self.sync_legacy()
+
+    def sync_legacy(self, axis_lookup=None):
+        """从 order 推导旧的 charge_axes / burst_axis 字段（保存前调用）。"""
+        if not self.order:
+            return
+        if axis_lookup is None:
+            return
+        charges, bursts = [], []
+        for aid in self.order:
+            axis = axis_lookup(aid)
+            if axis is None:
+                continue
+            if axis.role == ROLE_BURST:
+                bursts.append(aid)
+            else:
+                charges.append(aid)
+        self.charge_axes = charges
+        self.burst_axis = bursts[-1] if bursts else ""
+
+    def axis_ids(self):
+        return self.sequence()
 
     def members(self):
         return self.team.normalized() if self.team else ["", "", "", ""]
@@ -333,6 +410,7 @@ class Rotation:
         return {
             "id": self.id,
             "name": self.name,
+            "order": self.sequence(),
             "charge_axes": list(self.charge_axes),
             "burst_axis": self.burst_axis,
             "team": self.team.to_dict() if self.team else Team().to_dict(),
@@ -340,13 +418,16 @@ class Rotation:
 
     @staticmethod
     def from_dict(d):
-        return Rotation(
+        order = [x for x in (d.get("order") or []) if x]
+        rot = Rotation(
             id=d.get("id") or new_id(),
             name=d.get("name", "循环"),
             charge_axes=[x for x in d.get("charge_axes", []) if x],
             burst_axis=d.get("burst_axis", ""),
             team=Team.from_dict(d.get("team") or {}),
+            order=order,
         )
+        return rot
 
 
 @dataclass
@@ -490,11 +571,52 @@ class Store:
         if not self.axes or not self.rotations:
             axes, rots, team = make_demo_data()
             self.axes = self.axes or axes
-            self.rotations = self.rotations or rots
+            if not self.rotations:
+                if self.axes:
+                    # 有轴但没有编队（例如刚删光/手改文件）：按现有轴重建一个，
+                    # 别用 demo 里那批新 id，否则编队会引用到不存在的轴
+                    charges = [a for a in self.axes if a.role == ROLE_CHARGE]
+                    bursts = [a for a in self.axes if a.role == ROLE_BURST]
+                    rot = Rotation(name="编队 · 1")
+                    rot.set_sequence([a.id for a in charges] +
+                                     [b.id for b in bursts])
+                    self.rotations = [rot]
+                else:
+                    self.rotations = rots
             if not self.team.members or not any(self.team.members):
                 self.team = team
         self._migrate_team()
+        self._migrate_orders()
+        self._migrate_branches()
         self.dirty = False
+
+    def _migrate_orders(self):
+        """旧编队只有 charge_axes + burst_axis：合成 order，并同步回旧字段。"""
+        for rot in self.rotations:
+            if not rot.order:
+                rot.order = [x for x in (rot.charge_axes or []) if x]
+                if rot.burst_axis:
+                    rot.order.append(rot.burst_axis)
+            rot.sync_legacy(self.axis_by_id)
+
+    def _migrate_branches(self):
+        """旧分支选项引用「路线轴」：把路线轴的节点搬进分支自身的 nodes。"""
+        legacy_axes = {a.id: a for a in self.axes
+                       if getattr(a, "role", "") == ROLE_ROUTE}
+        for axis in self.axes:
+            for node in axis.nodes:
+                if getattr(node, "kind", "") != KIND_BRANCH:
+                    continue
+                for opt in node.options or []:
+                    legacy_id = opt.pop("_legacy_axis", "") if isinstance(opt, dict) else ""
+                    if not legacy_id:
+                        continue
+                    src = legacy_axes.get(legacy_id)
+                    if src is not None:
+                        opt["nodes"] = [Node.from_dict(n.to_dict()) for n in src.nodes]
+                    opt.setdefault("trigger", {
+                        "operator": "", "kind": KIND_SKILL, "stage": 1})
+                    opt.setdefault("next", "")
 
     def _migrate_team(self):
         """旧数据里队伍是全局的，迁移到每个编队。"""
@@ -614,7 +736,12 @@ class Store:
         if name:
             axis_name = name
         elif role == ROLE_BURST:
-            axis_name = "爆发轴"          # 固定名，不编号
+            # 爆发轴可以有多条：第一条叫「爆发轴」，之后 爆发轴 · 2、· 3 …
+            existing = [a for a in self.axes if a.role == ROLE_BURST]
+            if not existing:
+                axis_name = "爆发轴"
+            else:
+                axis_name = "爆发轴 · %d" % (len(existing) + 1)
         else:
             prefix = DEFAULT_PREFIX.get(role, "技能轴")
             axis_name = next_numbered_name(
@@ -627,21 +754,32 @@ class Store:
     def delete_axis(self, axis_id):
         self.axes = [a for a in self.axes if a.id != axis_id]
         for r in self.rotations:
+            r.order = [x for x in r.order if x != axis_id]
             r.charge_axes = [x for x in r.charge_axes if x != axis_id]
             if r.burst_axis == axis_id:
                 r.burst_axis = ""
+            # 分支里「跳到某轴」的目标被删了：退回顺着走
+            for axis in self.axes:
+                for node in axis.nodes:
+                    for opt in (getattr(node, "options", None) or []):
+                        if isinstance(opt, dict) and opt.get("next") == axis_id:
+                            opt["next"] = ""
         self.save_axes()
         self.save_rotations()
 
     def add_rotation(self, name=None):
         rot = Rotation(name=name or next_numbered_name(
             [r.name for r in self.rotations], "编队"))
-        charges = self.charge_axes()
-        bursts = self.burst_axes()
-        rot.charge_axes = [charges[0].id] if charges else []
-        rot.burst_axis = bursts[0].id if bursts else ""
-        # 新编队组默认沿用当前队伍，方便接着改
+        # 新编队沿用当前编队的轴顺序，方便接着改
         active = self.active_rotation()
+        if active is not None:
+            rot.set_sequence(list(active.sequence()))
+            rot.sync_legacy(self.axis_by_id)
+        else:
+            charges = self.charge_axes()
+            bursts = self.burst_axes()
+            rot.set_sequence([a.id for a in charges[:1]] +
+                             [a.id for a in bursts[:1]])
         rot.team = Team(members=list((active.members() if active
                                       else self.team.normalized())))
         self.rotations.append(rot)

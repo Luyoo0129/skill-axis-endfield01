@@ -205,10 +205,8 @@ class Editor:
         grid.columnconfigure(0, weight=1, uniform="btn")
         grid.columnconfigure(1, weight=1, uniform="btn")
 
-        _btn(grid, "＋ 新建技能轴", self.new_axis, "ghost").grid(
+        _btn(grid, "＋ 新建（选类型）", self.new_axis_menu, "ghost").grid(
             row=0, column=0, sticky="ew", padx=(0, 3), pady=3)
-        _btn(grid, "＋ 新建路线轴", self.new_route_axis, "ghost").grid(
-            row=2, column=0, columnspan=2, sticky="ew", padx=(0, 3), pady=3)
         _btn(grid, "＋ 新建编队", self.new_rotation, "ghost").grid(
             row=0, column=1, sticky="ew", padx=(3, 0), pady=3)
         _btn(grid, "删除此技能轴", self.delete_axis, "danger").grid(
@@ -273,10 +271,8 @@ class Editor:
         self.timeline.pack(fill="both", expand=True, pady=(6, 0))
         self.timeline.bind("<Button-1>", lambda e: self._select_node(None))
 
-        # 分支设置：就地嵌在时间轴下方（默认收起）
-        self.branch_panel = tk.Frame(tl_wrap, bg=theme.PANEL, padx=10, pady=8)
-        self.branch_editor = None
-        self._branch_node = None
+        # 分支展开状态：存的是当前展开的分支节点 id（点菱形切换）
+        self._expanded_branch = None
 
     # ================= 刷新 =================
     def refresh_all(self):
@@ -304,25 +300,20 @@ class Editor:
         return self.store.active_rotation()
 
     def _order(self):
-        """当前编队的播放顺序：充能轴们 + 爆发轴（爆发轴固定最下层）。"""
+        """当前编队的播放顺序：按 rot.order，充能轴/爆发轴混排。"""
         rot = self.current_rotation()
         if not rot:
             return []
-        out = [self.store.axis_by_id(i) for i in rot.charge_axes]
-        out = [a for a in out if a is not None]
-        burst = self.store.axis_by_id(rot.burst_axis)
-        if burst is not None:
-            out.append(burst)
-        return out
+        out = [self.store.axis_by_id(i) for i in rot.sequence()]
+        return [a for a in out if a is not None]
 
-    def _order_charges(self):
-        """播放顺序里可拖动的部分（不含爆发轴）。"""
-        order = self._order()
-        return [a for a in order if a.role != ROLE_BURST]
-
-    def _route_axes(self):
-        """路线轴：不参与播放顺序，单独一块显示。"""
-        return [a for a in self.store.axes if getattr(a, "role", "") == ROLE_ROUTE]
+    def _set_order(self, ids):
+        rot = self.current_rotation()
+        if rot is None:
+            return
+        rot.set_sequence(ids)
+        rot.sync_legacy(self.store.axis_by_id)
+        self.store.save_rotations()
 
     # ---------- 编队 ----------
     def refresh_rotation(self):
@@ -457,10 +448,9 @@ class Editor:
         self._anim_order.cancel()
         cv.delete("all")
         order = self._order()
-        routes = self._route_axes()
-        if not order and not routes:
+        if not order:
             cv.create_text(6, 24, anchor="w",
-                           text="还没有技能轴，点下面「＋ 新建技能轴」",
+                           text="还没有技能轴，点下面「＋ 新建」",
                            fill=theme.TEXT_MUTED, font=theme.font(theme.F_SMALL))
             cv.configure(scrollregion=(0, 0, LEFT_W, 80))
             return
@@ -471,30 +461,11 @@ class Editor:
         for idx, axis in enumerate(order):
             self._order_row(cv, axis, idx, y, charge_ids)
             y += AXIS_ROW_H
-
-        if routes:
-            # 路线轴单独一块：跟播放顺序分开，避免有人以为它会按顺序放
-            y += 6
-            cv.create_line(6, y, LEFT_W - 10, y, fill=theme.BORDER)
-            cv.create_text(6, y + 6, anchor="nw", text="路线轴（不参与播放）",
-                           fill=theme.TEXT_MUTED,
-                           font=theme.font(theme.F_TINY))
-            y += 22
-            for idx, axis in enumerate(routes):
-                self._order_row(cv, axis, idx, y, charge_ids)
-                y += AXIS_ROW_H
-
         cv.configure(scrollregion=(0, 0, LEFT_W, y + 8))
 
     def _order_row(self, cv, axis, idx, y, charge_ids):
         is_burst = axis.role == ROLE_BURST
-        is_route = axis.role == ROLE_ROUTE
-        if is_burst:
-            color = theme.BURST
-        elif is_route:
-            color = theme.CYAN
-        else:
-            color = theme.CHARGE
+        color = theme.BURST if is_burst else theme.CHARGE
         active = axis.id == self.current_axis_id
         tag = "row_%s" % axis.id
 
@@ -509,14 +480,14 @@ class Editor:
                        font=theme.font(theme.F_BODY, True), tags=(tag,))
 
         if is_burst:
-            badge = "爆发轴"
-        elif is_route:
-            badge = "路线轴"
+            burst_no = [a for a in self._order() if a.role == ROLE_BURST]
+            badge = ("爆发轴 %d/%d" % (burst_no.index(axis) + 1, len(burst_no))
+                     if len(burst_no) > 1 else "爆发轴")
         else:
             badge = "充能轴 %d/%d" % (
                 charge_ids.index(axis.id) + 1 if axis.id in charge_ids else idx + 1,
                 len(charge_ids))
-        if not is_burst and not is_route and axis.repeat_count() > 1:
+        if axis.repeat_count() > 1:
             badge += " · ×%d" % axis.repeat_count()
         bw = theme.font(theme.F_TINY, True).measure(badge) + 18
         bx = LEFT_W - 14 - bw
@@ -588,21 +559,28 @@ class Editor:
             pass
 
     # ---------- 技能轴增删 ----------
-    def new_axis(self):
+    def new_axis(self, role=ROLE_CHARGE):
         rot = self.current_rotation()
-        axis = self.store.add_axis(ROLE_CHARGE)
+        axis = self.store.add_axis(role)
         if rot:
-            rot.charge_axes.append(axis.id)
-            self.store.save_rotations()
+            ids = rot.sequence()
+            ids.append(axis.id)
+            self._set_order(ids)
         self.current_axis_id = axis.id
         self.refresh_all()
         self.app.rebuild_player()
 
-    def new_route_axis(self):
-        """新建一条「路线轴」：不进播放顺序，只给分支点当分支用。"""
-        axis = self.store.add_axis(ROLE_ROUTE)     # 名字自动是「路线 · N」
-        self.current_axis_id = axis.id
-        self.refresh_all()
+    def new_axis_menu(self):
+        """「＋ 新建」：点开选建爆发轴还是充能轴。"""
+        menu = tk.Menu(self.root, tearoff=0, bg=theme.PANEL_2, fg=theme.TEXT,
+                       activebackground=theme.ACCENT, activeforeground="#221a06",
+                       font=theme.font(theme.F_SMALL))
+        menu.add_command(label="充能轴", command=lambda: self.new_axis(ROLE_CHARGE))
+        menu.add_command(label="爆发轴", command=lambda: self.new_axis(ROLE_BURST))
+        try:
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            menu.grab_release()
 
     def delete_axis(self):
         axis = self.current_axis()
@@ -978,6 +956,9 @@ class Editor:
         color = theme.BURST if axis.role == ROLE_BURST else theme.CHARGE
         cv.create_rectangle(0, 0, 4000, 5, fill=color, outline="")
 
+        expanded = self._expanded_option_rows(axis)
+        base_h = NODE_H + 40
+
         x = 8
         y = 18
         for node in axis.nodes:
@@ -1002,10 +983,202 @@ class Editor:
         cv.create_text(x + NODE_W / 2, y + 78, text="到这里", fill=theme.TEXT_MUTED,
                        font=theme.font(theme.F_TINY))
 
-        cv.configure(scrollregion=(0, 0, max(x + NODE_W + 24, cv.winfo_width()),
-                                   NODE_H + 40))
+        height = base_h
+        width = max(x + NODE_W + 24, cv.winfo_width())
+        if expanded:
+            # 分支展开：每条分支画成一行「和技能轴一样的卡片」
+            branch_y = 18 + NODE_H + 18
+            for oi, opt in expanded:
+                row_w = self._branch_row(cv, oi, opt, branch_y)
+                width = max(width, row_w + 24)
+                branch_y += NODE_H + 16
+            height = branch_y + 10
+            tag = "bn_add"
+            rounded_rect(cv, 10, branch_y - 2, 10 + 96, branch_y + 22, r=6,
+                         fill=theme.PANEL_3, outline=theme.BORDER, tags=(tag,))
+            cv.create_text(10 + 48, branch_y + 10, text="＋ 加一条分支",
+                           fill=theme.CYAN, font=theme.font(theme.F_TINY, True),
+                           tags=(tag,))
+            cv.tag_bind(tag, "<Button-1>", lambda e: self._branch_add_option())
+            cv.create_text(116, branch_y + 10, anchor="w",
+                           text="点菱形收起分支 · 卡片可拖动排序，拖出删除",
+                           fill=theme.TEXT_MUTED, font=theme.font(theme.F_TINY))
+            height = branch_y + 34
+
+        cv.configure(height=height,
+                     scrollregion=(0, 0, width, height))
         self.tl_title.configure(text="技能轴 · %s" % axis.name, fg=color)
         self._sync_repeat_controls(axis)
+
+    def _expanded_option_rows(self, axis):
+        """当前展开的分支节点 -> [(选项序号, 选项)]，没展开返回空。"""
+        if not self._expanded_branch:
+            return []
+        for node in axis.nodes:
+            if getattr(node, "kind", "") == KIND_BRANCH and node.id == self._expanded_branch:
+                return list(enumerate(node.options or []))
+        self._expanded_branch = None
+        return []
+
+    def _branch_row(self, cv, oi, opt, y):
+        from .model import option_nodes, option_trigger
+
+        tint = theme.CYAN if oi % 2 == 0 else theme.GREEN
+        cv.create_rectangle(0, y - 6, 4000, y + NODE_H + 6, fill=theme.BG_2,
+                            outline="")
+        cv.create_rectangle(0, y - 6, 4, y + NODE_H + 6, fill=tint, outline="")
+
+        trig = option_trigger(opt)
+        trig_node = Node(operator=trig.get("operator") or "",
+                         kind=trig.get("kind") or KIND_SKILL,
+                         stage=trig.get("stage") or 1,
+                         icon=self.icons.icon_for(trig.get("operator") or "",
+                                                  trig.get("kind") or KIND_SKILL,
+                                                  trig.get("stage") or 1) or "")
+        self._branch_card(cv, trig_node, 10, y, oi, -1, tint=tint, trigger=True)
+
+        x = 10 + NODE_W + NODE_GAP
+        nodes = option_nodes(opt)
+        for ni, node in enumerate(nodes):
+            self._branch_card(cv, node, x, y, oi, ni, tint=tint)
+            x += NODE_W + NODE_GAP
+
+        # 末端放置区
+        for sx0 in range(x, x + NODE_W, 12):
+            cv.create_line(sx0, y, min(sx0 + 7, x + NODE_W), y, fill=theme.BORDER,
+                           width=2)
+            cv.create_line(sx0, y + NODE_H, min(sx0 + 7, x + NODE_W), y + NODE_H,
+                           fill=theme.BORDER, width=2)
+        for sy0 in range(y, y + NODE_H, 12):
+            cv.create_line(x, sy0, x, min(sy0 + 7, y + NODE_H), fill=theme.BORDER,
+                           width=2)
+            cv.create_line(x + NODE_W, sy0, x + NODE_W,
+                           min(sy0 + 7, y + NODE_H), fill=theme.BORDER, width=2)
+        cv.create_text(x + NODE_W / 2, y + 40, text="＋", fill=theme.TEXT_DIM,
+                       font=theme.font(14))
+        cv.create_text(x + NODE_W / 2, y + 62, text="拖分支", fill=theme.TEXT_MUTED,
+                       font=theme.font(theme.F_TINY))
+        cv.create_text(x + NODE_W / 2, y + 74, text="技能到这里",
+                       fill=theme.TEXT_MUTED, font=theme.font(theme.F_TINY))
+
+        # 走完去向
+        pill_x = x + NODE_W + 14
+        next_id = str(opt.get("next") or "")
+        target = self.store.axis_by_id(next_id) if next_id else None
+        label = ("顺走 → 主线" if not next_id
+                 else "跳到 → %s" % (target.name if target else "已删除的轴"))
+        tag = "bn_next_%d" % oi
+        w = theme.font(theme.F_TINY, True).measure(label) + 20
+        rounded_rect(cv, pill_x, y + 30, pill_x + w, y + 54, r=6,
+                     fill=theme.PANEL_3, outline=tint, tags=(tag,))
+        cv.create_text(pill_x + w / 2, y + 42, text=label, fill=tint,
+                       font=theme.font(theme.F_TINY, True), tags=(tag,))
+        cv.tag_bind(tag, "<Button-1>", lambda e, i=oi: self._pick_branch_next(i))
+        return pill_x + w + 100
+
+    def _branch_card(self, cv, node, x, y, oi, ni, tint=theme.CYAN, trigger=False):
+        tag = "br_%d_%d" % (oi, ni)
+        outline = theme.ACCENT if trigger else theme.BORDER
+        rounded_rect(cv, x, y, x + NODE_W, y + NODE_H, r=10,
+                     fill=theme.PANEL_2, outline=outline, width=2 if trigger else 1,
+                     tags=(tag,))
+        photo = self.icons.render(node.icon, 52) if node.icon else None
+        if photo is not None:
+            cv.create_image(x + NODE_W / 2, y + 32, image=photo, tags=(tag,))
+        cv.create_text(x + NODE_W / 2, y + 68, text=node.operator or "（未设）",
+                       fill=theme.TEXT, font=theme.font(theme.F_SMALL, True),
+                       tags=(tag,))
+        cv.create_text(x + NODE_W / 2, y + 84,
+                       text="%s · %s" % (self._node_label(node), self.key_hint(node)),
+                       fill=theme.TEXT_MUTED,
+                       font=theme.font(theme.F_TINY), tags=(tag,))
+        if trigger:
+            cv.create_text(x + NODE_W - 8, y + 10, anchor="ne", text="触发",
+                           fill=theme.ACCENT, font=theme.font(theme.F_TINY),
+                           tags=(tag,))
+            cv.tag_bind(tag, "<Button-1>", lambda e, i=oi: self._pick_branch_trigger(i))
+        else:
+            cv.tag_bind(tag, "<Button-1>",
+                        lambda e, i=oi, j=ni: self._branch_node_press(i, j))
+
+    def _branch_node_press(self, oi, ni):
+        self._begin_drag({"type": "branchmove", "opt": oi, "idx": ni}, "分支节点")
+
+    def _pick_branch_trigger(self, oi):
+        node = self._branch_node_by_oi(oi)
+        if node is None:
+            return
+        menu = tk.Menu(self.root, tearoff=0, bg=theme.PANEL_2, fg=theme.TEXT,
+                       activebackground=theme.ACCENT, activeforeground="#221a06",
+                       font=theme.font(theme.F_SMALL))
+        for op in self.current_team().normalized():
+            if not op:
+                continue
+            for kind in KINDS:
+                menu.add_command(
+                    label="%s · %s" % (op, KIND_CN[kind]),
+                    command=lambda o=op, k=kind, i=oi: self._set_trigger(i, o, k))
+        try:
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _pick_branch_next(self, oi):
+        node = self._branch_node_by_oi(oi)
+        if node is None:
+            return
+        menu = tk.Menu(self.root, tearoff=0, bg=theme.PANEL_2, fg=theme.TEXT,
+                       activebackground=theme.ACCENT, activeforeground="#221a06",
+                       font=theme.font(theme.F_SMALL))
+        menu.add_command(label="顺着走（回主线）",
+                         command=lambda i=oi: self._set_branch_next(i, ""))
+        for axis in self._order():
+            menu.add_command(label="跳到 → %s" % axis.name,
+                             command=lambda a=axis.id, i=oi: self._set_branch_next(i, a))
+        try:
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _branch_node_by_oi(self, oi):
+        axis = self.current_axis()
+        if axis is None:
+            return None
+        for node in axis.nodes:
+            if getattr(node, "kind", "") == KIND_BRANCH and node.id == self._expanded_branch:
+                opts = node.options or []
+                if 0 <= oi < len(opts):
+                    return node
+        return None
+
+    def _branch_option(self, oi):
+        node = self._branch_node_by_oi(oi)
+        if node is None:
+            return None
+        opts = node.options or []
+        return opts[oi] if 0 <= oi < len(opts) else None
+
+    def _set_trigger(self, oi, operator, kind):
+        from .model import option_trigger
+        opt = self._branch_option(oi)
+        if opt is None:
+            return
+        trig = option_trigger(opt)
+        trig.update({"operator": operator, "kind": kind, "stage": 1})
+        opt["trigger"] = trig
+        self._after_branch_edit()
+
+    def _set_branch_next(self, oi, axis_id):
+        opt = self._branch_option(oi)
+        if opt is None:
+            return
+        opt["next"] = axis_id
+        self._after_branch_edit()
+
+    def _after_branch_edit(self):
+        self.store.save_axes()
+        self.refresh_timeline()
+        self.app.refresh_overlay()
 
     def _node_card(self, cv, node, x, y):
         tag = "nd_%s" % node.id
@@ -1021,7 +1194,7 @@ class Editor:
             cv.create_text(cx, cy + 6, text="%d 条" % len(node.options or []),
                            fill=theme.TEXT_MUTED,
                            font=theme.font(theme.F_TINY), tags=(tag,))
-            cv.create_text(cx, cy + 22, text="双击设置", fill=theme.TEXT_MUTED,
+            cv.create_text(cx, cy + 22, text="点一下展开", fill=theme.TEXT_MUTED,
                            font=theme.font(theme.F_TINY), tags=(tag,))
             cv.tag_bind(tag, "<Button-1>", lambda e, n=node: self._node_press(n, e))
             return
@@ -1096,41 +1269,17 @@ class Editor:
         self.refresh_timeline()
 
     def edit_branch(self, node):
-        """单击分支点：在时间轴下方就地展开设置（不再弹窗）。"""
+        """单击分支点：展开/收起分支行（再点一下收起）。"""
         if node is None or getattr(node, "kind", "") != KIND_BRANCH:
             return
-        self._open_branch_panel(node)
-
-    def _open_branch_panel(self, node):
-        from .branchdialog import BranchEditor
-
-        self._branch_node = node
-        if getattr(self, "branch_panel", None) is None:
-            return
-        self.branch_panel.pack(fill="x", pady=(8, 0))
-        self.branch_editor = BranchEditor(self.branch_panel, self.app, node,
-                                          self._on_branch_changed)
-        self.branch_editor.build()
-
-    def _on_branch_changed(self):
-        node = getattr(self, "_branch_node", None)
-        if node is not None:
-            self.store.save_axes()
+        self._expanded_branch = None if self._expanded_branch == node.id else node.id
         self.refresh_timeline()
-        self.app.refresh_overlay()
-        editor = getattr(self, "branch_editor", None)
-        if editor is not None and getattr(editor, "node", None) is node:
-            editor.build()          # 行数/路线节点数跟着数据走
 
     def close_branch_panel(self):
-        self._branch_node = None
-        self.branch_editor = None
-        panel = getattr(self, "branch_panel", None)
-        if panel is not None:
-            try:
-                panel.pack_forget()
-            except tk.TclError:
-                pass
+        """兼容旧调用：收起展开的分支行。"""
+        if self._expanded_branch:
+            self._expanded_branch = None
+            self.refresh_timeline()
 
     # ---------- 拖拽 ----------
     def _begin_drag(self, payload, label, image=None):
@@ -1214,20 +1363,25 @@ class Editor:
                                 TEAM_CARD_W + 10, fixed=4)
         elif kind == "reorder":
             idx = self._order_drop_index(e)
-            rot = self.current_rotation()
-            charges = list(rot.charge_axes) if rot else []
+            order_ids = list(self.current_rotation().sequence()) \
+                if self.current_rotation() else []
             if idx is not None:
-                idx = min(idx, len(charges))
+                idx = min(idx, len(order_ids))
             self._pending_drop = idx
             self._preview_once("reorder", self.order_canvas,
                                "row_%s" % self._drag["axis"].id)
             axis_id = self._drag["axis"].id
-            self._preview_shift(self._anim_order, charges,
-                                charges.index(axis_id) if axis_id in charges else 0,
+            self._preview_shift(self._anim_order, order_ids,
+                                order_ids.index(axis_id) if axis_id in order_ids else 0,
                                 idx, lambda i, a_id: "row_%s" % a_id, 2,
                                 AXIS_ROW_H, vertical=True, fixed=2)
         else:
-            idx = self._timeline_drop_index(e)
+            target = self._timeline_target(e)
+            if target is not None and target[0] == "branch":
+                # 落到分支行：不画让位预览（行内卡片直接落位）
+                self._pending_drop = target
+                return
+            idx = target[1] if target is not None else None
             self._pending_drop = idx
             axis = self.current_axis()
             nodes = list(axis.nodes) if axis else []
@@ -1236,6 +1390,8 @@ class Editor:
                 self._preview_insert(self._anim_timeline, len(nodes), idx,
                                      lambda i: "nd_%s" % nodes[i].id, 8,
                                      NODE_W + NODE_GAP, fixed=18)
+                return
+            if self._drag.get("type") == "branchmove":
                 return
             node = self._drag.get("node")
             from_idx = nodes.index(node) if node in nodes else 0
@@ -1268,8 +1424,7 @@ class Editor:
             return None
         _x, y = pos
         idx = int((y - 2 + AXIS_ROW_H / 2) // AXIS_ROW_H)
-        # 只能落在充能轴之间：爆发轴固定在最后，不能拖到它下面
-        return max(0, min(idx, len(self._order_charges())))
+        return max(0, min(idx, len(self._order())))
 
     def _team_gap_at_global(self, e):
         pos = self._in_canvas(self.team_canvas, e)
@@ -1291,6 +1446,101 @@ class Editor:
         idx = int((x - 8 + (NODE_W + NODE_GAP) / 2) // (NODE_W + NODE_GAP))
         return max(0, min(idx, total))
 
+    # ---------- 分支行：拖放目标 ----------
+    def _branch_row_geometry(self):
+        """展开中的分支行：{选项序号: (y, 节点数)}。"""
+        axis = self.current_axis()
+        rows = {}
+        if axis is None or not self._expanded_branch:
+            return rows
+        y = 18 + NODE_H + 18
+        for oi, opt in enumerate(self._branch_option_list()):
+            rows[oi] = (y, len(opt.get("nodes") or []))
+            y += NODE_H + 16
+        return rows
+
+    def _branch_option_list(self):
+        axis = self.current_axis()
+        if axis is None or not self._expanded_branch:
+            return []
+        for node in axis.nodes:
+            if getattr(node, "kind", "") == KIND_BRANCH and node.id == self._expanded_branch:
+                return list(node.options or [])
+        return []
+
+    def _timeline_target(self, e):
+        """返回 ("main", idx) 或 ("branch", oi, gap)；不在时间轴内返回 None。"""
+        pos = self._in_canvas(self.timeline, e)
+        if pos is None:
+            return None
+        x, y = pos
+        for oi, (ry, count) in self._branch_row_geometry().items():
+            if ry - 8 <= y <= ry + NODE_H + 8:
+                # 第一格是触发卡，节点从第二格开始
+                start = 10 + NODE_W + NODE_GAP
+                gap = int((x - start + (NODE_W + NODE_GAP) / 2) // (NODE_W + NODE_GAP))
+                return ("branch", oi, max(0, min(gap, count)))
+        axis = self.current_axis()
+        total = len(axis.nodes) if axis else 0
+        idx = int((x - 8 + (NODE_W + NODE_GAP) / 2) // (NODE_W + NODE_GAP))
+        return ("main", max(0, min(idx, total)))
+
+    def _branch_insert(self, oi, gap, operator, kind, stage=1):
+        opts = self._branch_option_list()
+        if not (0 <= oi < len(opts)):
+            return
+        file = self.icons.icon_for(operator, kind, stage) or ""
+        node = Node(operator=operator, kind=kind, icon=file, stage=stage)
+        nodes = list(opts[oi].get("nodes") or [])
+        gap = max(0, min(int(gap), len(nodes)))
+        nodes.insert(gap, node)
+        opts[oi]["nodes"] = nodes
+        self._after_branch_edit()
+
+    def _branch_move(self, oi, ni, target):
+        opts = self._branch_option_list()
+        if not (0 <= oi < len(opts)):
+            return
+        nodes = list(opts[oi].get("nodes") or [])
+        if not (0 <= ni < len(nodes)):
+            return
+        node = nodes[ni]
+        if target is None:
+            nodes.pop(ni)                       # 拖到窗口外 = 删除
+            opts[oi]["nodes"] = nodes
+            self._after_branch_edit()
+            return
+        kind, toi, gap = target
+        if kind != "branch":
+            return
+        if toi == oi:
+            opts[oi]["nodes"] = move_item(nodes, ni, gap)
+        else:
+            nodes.pop(ni)
+            opts[oi]["nodes"] = nodes
+            dst = list(opts[toi].get("nodes") or [])
+            dst.insert(max(0, min(gap, len(dst))), node)
+            opts[toi]["nodes"] = dst
+        self._after_branch_edit()
+
+    def _branch_add_option(self):
+        axis = self.current_axis()
+        node = None
+        for n in axis.nodes if axis else []:
+            if getattr(n, "kind", "") == KIND_BRANCH and n.id == self._expanded_branch:
+                node = n
+                break
+        if node is None:
+            return
+        team = [m for m in self.current_team().normalized() if m]
+        node.options = list(node.options or []) + [{
+            "trigger": {"operator": team[0] if team else "",
+                        "kind": KIND_SKILL, "stage": 1},
+            "nodes": [],
+            "next": "",
+        }]
+        self._after_branch_edit()
+
     # 旧的「插入线」指示已由 _preview_shift 的让位预览取代，这两个方法仅保留给外部调用
     def _draw_reorder_indicator(self, idx):
         return
@@ -1302,65 +1552,74 @@ class Editor:
         drag = self._drag
         if not drag:
             return
-        idx = self._pending_drop
+        drop = self._pending_drop
         moved = drag.get("moved")
         armed = drag.get("armed")
         self._end_drag()
 
+        kind = drag.get("type")
+
         if not armed:
             # 没按够时间（或过早移动）：当作单击，不改顺序
-            if drag.get("type") == "new":
+            if kind == "new":
                 self.add_node(self.selected_member, drag["kind"], None,
                               drag.get("stage", 1))
-            elif drag.get("type") == "move":
+            elif kind == "move":
                 node = drag.get("node")
                 if node is not None and getattr(node, "kind", "") == KIND_BRANCH:
-                    self.edit_branch(node)     # 单击分支点就展开设置
+                    self.edit_branch(node)      # 单击菱形：展开/收起分支行
             return
 
-        if drag.get("type") == "team":
+        if kind == "team":
             if not moved:
-                return                       # 只点了一下
-            if idx is None:
-                self.refresh_team()          # 拖到窗口外：还原被让位的卡片
+                return
+            if not isinstance(drop, int):
+                self.refresh_team()
                 return
             members = self.current_team().normalized()
-            self._team_drop(drag["from"], idx, members)
+            self._team_drop(drag["from"], drop, members)
             return
 
-        if drag.get("type") == "reorder":
-            if not moved:
-                return
-            if idx is None:
+        if kind == "reorder":
+            if not moved or not isinstance(drop, int):
                 self.refresh_order()
                 return
-            self._reorder_axis(drag["axis"], idx)
+            self._reorder_axis(drag["axis"], drop)
+            return
+
+        if kind == "branchmove":
+            target = drop if isinstance(drop, tuple) else None
+            if not moved:
+                return
+            self._branch_move(drag["opt"], drag["idx"], target)
             return
 
         if not moved:
-            if drag.get("type") == "new":
+            if kind == "new":
                 self.add_node(self.selected_member, drag["kind"])
-            elif drag.get("type") == "move":
+            elif kind == "move":
                 node = drag.get("node")
                 if node is not None and getattr(node, "kind", "") == KIND_BRANCH:
-                    # 单击分支点：就地展开分支设置
                     self.edit_branch(node)
                 else:
                     self.close_branch_panel()
             return
 
-        if drag.get("type") == "new":
-            if idx is not None:
-                self.add_node(self.selected_member, drag["kind"], idx,
+        if kind == "new":
+            if isinstance(drop, tuple) and drop[0] == "branch":
+                self._branch_insert(drop[1], drop[2], self.selected_member,
+                                    drag["kind"], drag.get("stage", 1))
+            elif isinstance(drop, int):
+                self.add_node(self.selected_member, drag["kind"], drop,
                               drag.get("stage", 1))
             else:
-                self.refresh_timeline()      # 拖到时间轴外：把让出的空位收回来
-        elif drag.get("type") == "move":
-            node = drag["node"]
-            if idx is None:
+                self.refresh_timeline()
+        elif kind == "move":
+            node = drag.get("node")
+            if not isinstance(drop, int):
                 self._remove_node(node)
             else:
-                self._move_node(node, idx)
+                self._move_node(node, drop)
 
     def _end_drag(self):
         self._drag = None
@@ -1399,21 +1658,17 @@ class Editor:
 
     def _reorder_axis(self, axis, idx):
         rot = self.current_rotation()
-        if not rot or axis.role != ROLE_CHARGE:
-            return                       # 爆发轴 / 路线轴不参与播放顺序拖动
-        if axis.id not in rot.charge_axes:
+        if not rot:
             return
-        before = {a_id: i for i, a_id in enumerate(rot.charge_axes)}
-        charges = list(rot.charge_axes)
-        old = charges.index(axis.id)
-        charges.remove(axis.id)
-        if idx > old:
-            idx -= 1
-        idx = max(0, min(idx, len(charges)))
-        charges.insert(idx, axis.id)
-        rot.charge_axes = charges
-        self.store.save_rotations()
-        self.refresh_order()          # 拖动时已经滑到位，这里重画即可，别再叠加动画
+        ids = rot.sequence()
+        if axis.id not in ids:
+            return
+        old = ids.index(axis.id)
+        new_ids = move_item(ids, old, idx)
+        if new_ids == ids:
+            return
+        self._set_order(new_ids)
+        self.refresh_order()          # 拖动时已经滑到位，这里重画即可
         self.app.rebuild_player()
 
     def _move_node(self, node, idx):
