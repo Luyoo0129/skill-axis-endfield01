@@ -73,6 +73,7 @@ class Application:
         if self.settings.gamepad_enabled:
             self.gamepad.start()
         self.root.after(25, self._drain)
+        self.root.after(600, self._poll_pad)
 
     # ================= 自动保存 =================
     SAVE_DELAY_MS = 800
@@ -163,22 +164,52 @@ class Application:
         if isinstance(item, tuple):
             kind = item[0]
             if kind == "pad":
+                # 收到手柄按键 = 此刻一定连着，别等状态事件/轮询
+                if not self.pad_connected:
+                    self._set_pad_connected(True)
                 self._handle_pad(item[1], item[2])
             elif kind == "gamepad":
-                was = self.pad_connected
-                self.pad_connected = (item[1] == "connected")
-                if was != self.pad_connected and self.overlay is not None:
-                    try:
-                        self.overlay.notify_pad(self.pad_connected)
-                    except Exception as exc:  # noqa: BLE001
-                        self._note_error(exc)
-                if self.editor is not None:
-                    try:
-                        self.editor._sync_settings_widgets()
-                    except (tk.TclError, AttributeError):
-                        pass
+                self._set_pad_connected(item[1] == "connected")
             return
         self._handle_event(item)
+
+    def _poll_pad(self):
+        """主动确认手柄是否在线（事件可能丢，不能只靠状态变化）。"""
+        alive = False
+        try:
+            if self.gamepad.available and self.gamepad.enabled:
+                alive = bool(self.gamepad.connected_now())
+        except Exception as exc:  # noqa: BLE001
+            self._note_error(exc)
+            alive = False
+        self._set_pad_connected(alive)
+        try:
+            self.root.after(600, self._poll_pad)
+        except tk.TclError:
+            pass
+
+    def _set_pad_connected(self, value):
+        """唯一的手柄连接状态入口：变化时通知悬浮窗并刷新按键文案。"""
+        value = bool(value)
+        if value == self.pad_connected:
+            return
+        self.pad_connected = value
+        if self.overlay is not None:
+            try:
+                self.overlay.notify_pad(value)
+            except Exception as exc:  # noqa: BLE001
+                self._note_error(exc)
+        else:
+            self.refresh_overlay()
+        if self.editor is not None:
+            try:
+                self.editor._sync_settings_widgets()
+            except (tk.TclError, AttributeError):
+                pass
+        try:
+            self.test_panel.refresh_status() if self.test_panel else None
+        except tk.TclError:
+            self.test_panel = None
 
     def _handle_pad(self, phase, bit):
         # 绑定手柄
@@ -401,14 +432,14 @@ class Application:
         if enabled and not self.gamepad._thread:
             self.gamepad.start()
         self.pad_rules.reset()
-        if not enabled:
-            self.pad_connected = False
-        self.refresh_overlay()
-        if self.overlay is not None:
+        alive = False
+        if enabled:
             try:
-                self.overlay.notify_pad(bool(enabled and self.pad_connected))
-            except Exception as exc:  # noqa: BLE001
-                self._note_error(exc)
+                alive = bool(self.gamepad.connected_now())
+            except Exception:  # noqa: BLE001
+                alive = False
+        self._set_pad_connected(alive)
+        self.refresh_overlay()
 
     # ================= 面板 =================
     def open_test_panel(self):
