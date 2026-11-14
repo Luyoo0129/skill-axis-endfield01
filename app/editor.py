@@ -6,11 +6,11 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from . import theme
+from . import dragfx, theme
 from .keys import vk_label
 from .model import (KIND_CN, KIND_COMBO, KIND_SKILL, KINDS, KIND_ULT,
                     ROLE_BURST, ROLE_CHARGE, ROLE_CN, Axis, Node, Team,
-                    assign_member)
+                    assign_member, move_item)
 from .opspicker import OperatorPicker
 from .textdialog import ask_text
 from .widgets import rounded_rect
@@ -63,6 +63,7 @@ class Editor:
         self.selected_member = ""
         self._drag = None
         self._ghost = None
+        self._ghost_photo = None
         self._pending_drop = None
         self._rename_entry = None
 
@@ -218,12 +219,8 @@ class Editor:
         self.team_canvas = tk.Canvas(team_wrap, bg=theme.PANEL, highlightthickness=0,
                                      bd=0, height=TEAM_CARD_H + 8)
         self.team_canvas.pack(fill="x", pady=(8, 0))
-        self._team_drag = None
-        for ev, fn in (("<ButtonPress-1>", self._team_press),
-                       ("<B1-Motion>", self._team_drag_move),
-                       ("<ButtonRelease-1>", self._team_release),
-                       ("<Double-Button-1>", self._team_double)):
-            self.team_canvas.bind(ev, fn)
+        self.team_canvas.bind("<ButtonPress-1>", self._team_press)
+        self.team_canvas.bind("<Double-Button-1>", self._team_double)
 
         skill_wrap = tk.Frame(c, bg=theme.PANEL, padx=14, pady=12)
         skill_wrap.pack(fill="x", pady=(10, 0))
@@ -602,20 +599,18 @@ class Editor:
         idx = self._team_index_at(e.x, e.y)
         if idx is None:
             return
-        self._team_drag = None
         self._on_slot_change(idx)
 
     def _on_slot_select(self, idx):
         cn = self.current_team().normalized()[idx]
         if not cn:
-            self._team_drag = None     # 空位会直接开选择器，别留半截拖拽状态
             self._on_slot_change(idx)
             return
         self.selected_member = cn
         self.refresh_team()
         self.refresh_skills()
 
-    # ---------- 队伍拖拽换位 ----------
+    # ---------- 队伍拖拽换位（插入式：拖过去整体挪位） ----------
     def _team_index_at(self, x, y):
         """canvas 坐标 -> 队伍位（0~3）；落在卡片区外返回 None。"""
         if y is None or not (0 <= y <= TEAM_CARD_H + 8):
@@ -628,72 +623,95 @@ class Editor:
             return None
         return min(3, idx)
 
+    def _team_gap_at(self, x, y):
+        """canvas 坐标 -> 插入缝（0~4）。缝 i 表示「插到第 i 张卡前面」。"""
+        if y is None or not (0 <= y <= TEAM_CARD_H + 8):
+            return None
+        total = 2 + TEAM_CARD_W * 4 + 10 * 3
+        if x < 0 or x > total + 10:
+            return None
+        # 每张卡的中心把区间分成 4 段，边界就是缝
+        center = 2 + TEAM_CARD_W / 2.0
+        idx = 0
+        while idx < 4 and x > center + idx * (TEAM_CARD_W + 10):
+            idx += 1
+        return idx
+
+    def _team_ghost_image(self, cn):
+        try:
+            return self.icons.render_portrait(cn, 56)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _team_press(self, e):
         idx = self._team_index_at(e.x, e.y)
         if idx is None:
-            self._team_drag = None
             return
-        self._team_drag = {"from": idx, "x": e.x, "y": e.y, "target": idx}
+        cn = self.current_team().normalized()[idx]
+        if not cn:
+            return                    # 空位没有东西可拖，交给单击开选择器
+        self._begin_drag({"type": "team", "from": idx}, cn,
+                         image=self._team_ghost_image(cn))
 
-    def _team_drag_move(self, e):
-        d = self._team_drag
-        if not d:
+    # ---------- 拖动时的实时让位 ----------
+    def _preview_shift(self, cv, items, from_idx, gap, tag_of, base, step,
+                       vertical=False):
+        """拖动中预演落点：把被拖的那张藏起来，其余整体挪开让出空位。
+
+        这样看到的是「空位跟着鼠标走」，而不是一条会被幽灵挡住的指示线。
+        """
+        if not items:
             return
-        moved = abs(e.x - d["x"]) + abs(e.y - d["y"]) >= 6
-        if not moved:
-            return
-        idx = self._team_index_at(e.x, e.y)
-        if idx is None:
-            idx = d["from"]
-        if idx != d["target"]:
-            d["target"] = idx
-            self._team_drop_hint(idx)
-            try:
-                self.team_canvas.configure(cursor="fleur")
-            except tk.TclError:
-                pass
-
-    def _team_drop_hint(self, idx):
-        """拖动时把落点那张卡片描成琥珀色。"""
-        cv = self.team_canvas
-        for j in range(4):
-            try:
-                cv.itemconfigure("tmrect_%d" % j,
-                                 outline=theme.ACCENT if j == idx else theme.BORDER,
-                                 width=2 if j == idx else 1)
-            except tk.TclError:
-                pass
-
-    def _team_release(self, e):
-        d, self._team_drag = self._team_drag, None
+        if gap is None:
+            gap = from_idx
         try:
-            self.team_canvas.configure(cursor="")
-        except tk.TclError:
-            pass
-        if not d:
+            preview = move_item(items, from_idx, gap)
+        except (TypeError, ValueError):
             return
-        idx = self._team_index_at(e.x, e.y)
-        moved = abs(e.x - d["x"]) + abs(e.y - d["y"]) >= 6
-        if not moved or idx is None or idx == d["from"]:
-            # 只是点了一下：除了还原描边，别重建 item（重建会让「双击更换」失手）
-            if d["target"] != d["from"]:
-                self.refresh_team()
+        if list(preview) == list(items):
             return
 
-        members = self.current_team().normalized()
-        keep = members[d["from"]]
-        target = members[idx]
-        if not keep and not target:
+        groups = []
+        for i, it in enumerate(items):
+            if i == from_idx:
+                continue
+            try:
+                j = preview.index(it)
+            except ValueError:
+                continue
+            tag = tag_of(i, it)
+            try:
+                box = cv.bbox(tag)
+            except tk.TclError:
+                continue
+            if not box:
+                continue
+            cur = box[1] if vertical else box[0]
+            target = base + j * step
+            d = target - cur
+            if abs(d) >= 1:
+                groups.append((tag, 0, d) if vertical else (tag, d, 0))
+        dragfx.glide(self.root, cv, groups)
+
+    def _hide_dragged(self, cv, tag):
+        try:
+            cv.itemconfigure(tag, state="hidden")
+            return True
+        except tk.TclError:
+            return False
+
+    def _team_drop(self, from_slot, gap, members_before):
+        """松手：把卡片插进 gap 这条缝。拖动时已经让好位了，这里只落数据。"""
+        new_members = move_item(members_before, from_slot, gap)
+        if new_members == members_before:
             self.refresh_team()
             return
-
-        # 互换两个位置：不会产生重复干员
-        members[d["from"]], members[idx] = target, keep
-        self.set_current_team(members)
+        self.set_current_team(new_members)
         self._after_team_change()
 
     def _after_team_change(self):
-        if self.selected_member and self.selected_member not in self.current_team().normalized():
+        if self.selected_member and \
+                self.selected_member not in self.current_team().normalized():
             self.selected_member = ""
         self.refresh_team()
         self.refresh_skills()
@@ -886,42 +904,72 @@ class Editor:
         self.refresh_timeline()
 
     # ---------- 拖拽 ----------
-    def _begin_drag(self, payload, label):
+    def _begin_drag(self, payload, label, image=None):
         self._end_drag()
         self._drag = dict(payload)
         self._drag["moved"] = False
+        self._drag["press"] = (self.root.winfo_pointerx(), self.root.winfo_pointery())
         self._pending_drop = None
-        try:
-            ghost = tk.Toplevel(self.root)
-            ghost.overrideredirect(True)
-            ghost.attributes("-topmost", True)
-            ghost.configure(bg=theme.ACCENT)
-            tk.Label(ghost, text=label, bg=theme.PANEL_3, fg=theme.TEXT,
-                     font=theme.font(theme.F_SMALL), padx=10, pady=6).pack(padx=2,
-                                                                         pady=2)
-            ghost.geometry("+%d+%d" % (self.root.winfo_pointerx() + 12,
-                                       self.root.winfo_pointery() + 8))
-            self._ghost = ghost
-        except tk.TclError:
-            self._ghost = None
+        ghost, photo = dragfx.make_ghost(self.root, label, image=image)
+        self._ghost = ghost
+        self._ghost_photo = photo
+        if ghost is not None:
+            dragfx.set_ghost_alpha(ghost, 0.86)
         self.root.bind_all("<B1-Motion>", self._drag_motion, add="+")
         self.root.bind_all("<ButtonRelease-1>", self._drag_release, add="+")
 
     def _drag_motion(self, e):
         if not self._drag:
             return
-        self._drag["moved"] = True
-        if self._ghost is not None:
-            try:
-                self._ghost.geometry("+%d+%d" % (e.x_root + 12, e.y_root + 8))
-            except tk.TclError:
-                self._ghost = None
-        if self._drag.get("type") == "reorder":
-            self._pending_drop = self._order_drop_index(e)
-            self._draw_reorder_indicator(self._pending_drop)
+        px, py = self._drag.get("press", (e.x_root, e.y_root))
+        if not self._drag["moved"]:
+            if abs(e.x_root - px) + abs(e.y_root - py) < dragfx.DRAG_THRESHOLD:
+                return
+            self._drag["moved"] = True
+        if not dragfx.move_ghost(self._ghost, e.x_root, e.y_root):
+            self._ghost = None
+
+        kind = self._drag.get("type")
+        if kind == "team":
+            gap = self._team_gap_at_global(e)
+            self._pending_drop = gap
+            members = self.current_team().normalized()
+            self._preview_once("team", self.team_canvas,
+                               "tm_%d" % self._drag["from"])
+            self._preview_shift(self.team_canvas, members, self._drag["from"],
+                                gap, lambda i, _cn: "tm_%d" % i, 2,
+                                TEAM_CARD_W + 10)
+        elif kind == "reorder":
+            idx = self._order_drop_index(e)
+            charges = list(self.current_rotation().charge_axes) \
+                if self.current_rotation() else []
+            if idx is not None:
+                idx = min(idx, len(charges))
+            self._pending_drop = idx
+            self._preview_once("reorder", self.order_canvas,
+                               "row_%s" % self._drag["axis"].id)
+            self._preview_shift(self.order_canvas, charges,
+                                charges.index(self._drag["axis"].id)
+                                if self._drag["axis"].id in charges else 0,
+                                idx, lambda i, a_id: "row_%s" % a_id, 2,
+                                AXIS_ROW_H, vertical=True)
         else:
-            self._pending_drop = self._timeline_drop_index(e)
-            self._draw_drop_indicator(self._pending_drop)
+            idx = self._timeline_drop_index(e)
+            self._pending_drop = idx
+            axis = self.current_axis()
+            nodes = list(axis.nodes) if axis else []
+            node = self._drag.get("node")
+            from_idx = nodes.index(node) if node in nodes else 0
+            self._preview_once("move", self.timeline, "nd_%s" % getattr(node, "id", ""))
+            self._preview_shift(self.timeline, nodes, from_idx, idx,
+                                lambda i, n: "nd_%s" % n.id, 8,
+                                NODE_W + NODE_GAP)
+
+    def _preview_once(self, key, cv, tag):
+        """被拖的东西只藏一次，免得每帧都去改 canvas。"""
+        if self._drag is None or self._drag.get("hidden_" + key):
+            return
+        self._drag["hidden_" + key] = self._hide_dragged(cv, tag)
 
     def _in_canvas(self, cv, e):
         try:
@@ -942,6 +990,16 @@ class Editor:
         idx = int((y - 2 + AXIS_ROW_H / 2) // AXIS_ROW_H)
         return max(0, min(idx, len(self._order())))
 
+    def _team_gap_at_global(self, e):
+        pos = self._in_canvas(self.team_canvas, e)
+        if pos is None:
+            return None
+        return self._team_gap_at(pos[0], pos[1])
+
+    def _draw_team_indicator(self, gap):
+        """已改成「让位预览」，不再画被幽灵挡住的竖线；保留空实现免得旧调用报错。"""
+        return
+
     def _timeline_drop_index(self, e):
         pos = self._in_canvas(self.timeline, e)
         if pos is None:
@@ -952,23 +1010,12 @@ class Editor:
         idx = int((x - 8 + (NODE_W + NODE_GAP) / 2) // (NODE_W + NODE_GAP))
         return max(0, min(idx, total))
 
+    # 旧的「插入线」指示已由 _preview_shift 的让位预览取代，这两个方法仅保留给外部调用
     def _draw_reorder_indicator(self, idx):
-        cv = self.order_canvas
-        cv.delete("drop_ind")
-        if idx is None:
-            return
-        y = 2 + idx * AXIS_ROW_H - 3
-        cv.create_line(6, y, LEFT_W - 10, y, fill=theme.ACCENT, width=3,
-                       tags=("drop_ind",))
+        return
 
     def _draw_drop_indicator(self, idx):
-        cv = self.timeline
-        cv.delete("drop_ind")
-        if idx is None:
-            return
-        x = 8 + idx * (NODE_W + NODE_GAP) - NODE_GAP / 2
-        cv.create_line(x, 16, x, 18 + NODE_H, fill=theme.ACCENT, width=3,
-                       tags=("drop_ind",))
+        return
 
     def _drag_release(self, e):
         drag = self._drag
@@ -978,8 +1025,21 @@ class Editor:
         moved = drag.get("moved")
         self._end_drag()
 
+        if drag.get("type") == "team":
+            if not moved:
+                return                       # 只点了一下
+            if idx is None:
+                self.refresh_team()          # 拖到窗口外：还原被让位的卡片
+                return
+            members = self.current_team().normalized()
+            self._team_drop(drag["from"], idx, members)
+            return
+
         if drag.get("type") == "reorder":
-            if not moved or idx is None:
+            if not moved:
+                return
+            if idx is None:
+                self.refresh_order()
                 return
             self._reorder_axis(drag["axis"], idx)
             return
@@ -1008,16 +1068,21 @@ class Editor:
             except tk.TclError:
                 pass
             self._ghost = None
+        self._ghost_photo = None
         try:
             self.root.unbind_all("<B1-Motion>")
             self.root.unbind_all("<ButtonRelease-1>")
         except tk.TclError:
             pass
-        for cv in (self.timeline, self.order_canvas):
+        for cv in (self.timeline, self.order_canvas, self.team_canvas):
             try:
                 cv.delete("drop_ind")
             except tk.TclError:
                 pass
+        try:
+            self.team_canvas.configure(cursor="")
+        except (tk.TclError, AttributeError):
+            pass
 
     def _reorder_axis(self, axis, idx):
         rot = self.current_rotation()
@@ -1025,6 +1090,7 @@ class Editor:
             return
         if axis.id not in rot.charge_axes:
             return
+        before = {a_id: i for i, a_id in enumerate(rot.charge_axes)}
         charges = list(rot.charge_axes)
         old = charges.index(axis.id)
         charges.remove(axis.id)
@@ -1037,10 +1103,15 @@ class Editor:
         self.refresh_order()
         self.app.rebuild_player()
 
+        groups = [("row_%s" % a_id, 0, (before[a_id] - i) * AXIS_ROW_H)
+                  for i, a_id in enumerate(charges) if a_id in before and before[a_id] != i]
+        dragfx.slide(self.root, self.order_canvas, groups)
+
     def _move_node(self, node, idx):
         axis = self.current_axis()
         if not axis or node not in axis.nodes:
             return
+        before = {n.id: i for i, n in enumerate(axis.nodes)}
         old = axis.nodes.index(node)
         axis.nodes.remove(node)
         if idx > old:
@@ -1049,6 +1120,10 @@ class Editor:
         axis.nodes.insert(idx, node)
         self.store.save_axes()
         self.refresh_timeline()
+
+        groups = [("nd_%s" % n.id, (before[n.id] - i) * (NODE_W + NODE_GAP), 0)
+                  for i, n in enumerate(axis.nodes) if n.id in before and before[n.id] != i]
+        dragfx.slide(self.root, self.timeline, groups)
 
     def _remove_node(self, node):
         axis = self.current_axis()

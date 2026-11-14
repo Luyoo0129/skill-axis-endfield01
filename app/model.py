@@ -116,6 +116,31 @@ class Node:
 TEAM_SIZE = 4
 
 
+def move_item(seq, src, gap):
+    """把 seq[src] 挪到 gap 这个「插入缝」，其余元素整体让位。
+
+    gap 是缝的编号（0..len(seq)）：拖到第 3 个元素前面就是 gap=2。
+    这是拖拽换序的统一语义（编队行 / 技能轴节点 / 队伍卡片都用它），
+    比「两两互换」更符合直觉：拖过去是插入，不是对调。
+    """
+    items = list(seq or [])
+    n = len(items)
+    try:
+        src = int(src)
+        gap = int(gap)
+    except (TypeError, ValueError):
+        return items
+    if not (0 <= src < n):
+        return items
+    gap = max(0, min(gap, n))
+
+    rest = items[:src] + items[src + 1:]
+    to = gap if gap <= src else gap - 1
+    to = max(0, min(to, len(rest)))
+    rest.insert(to, items[src])
+    return rest
+
+
 def assign_member(members, idx, cn, size=TEAM_SIZE):
     """把 cn 放到第 idx 位，返回新的队伍列表。
 

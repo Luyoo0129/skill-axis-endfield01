@@ -376,6 +376,24 @@ def test_team_unique():
     check("去重后长度仍是 4", len(dedup) == 4)
 
 
+def test_move_item():
+    """拖拽换序的统一语义：插入式整体挪位（不是两两互换）。"""
+    from app.model import move_item
+
+    base = ["A", "B", "C", "D"]
+    check("拖到后面：整体前移", move_item(base, 0, 3) == ["B", "C", "A", "D"],
+          repr(move_item(base, 0, 3)))
+    check("拖到最前：整体后移", move_item(base, 3, 0) == ["D", "A", "B", "C"],
+          repr(move_item(base, 3, 0)))
+    check("拖到自己原位不变", move_item(base, 1, 1) == base, repr(move_item(base, 1, 1)))
+    check("往后挪一格", move_item(base, 1, 3) == ["A", "C", "B", "D"],
+          repr(move_item(base, 1, 3)))
+    check("挪到末尾之后的缝", move_item(base, 0, 4) == ["B", "C", "D", "A"],
+          repr(move_item(base, 0, 4)))
+    check("越界索引原样返回", move_item(base, 9, 1) == base)
+    check("元素数量不变", len(move_item(base, 2, 0)) == 4)
+
+
 def test_skip():
     p, rot, axes, s = mk_player(charge_kinds=((KIND_SKILL, KIND_ULT),))
     p.start()
@@ -526,7 +544,7 @@ def main():
     for fn in (test_segment_order, test_play_through, test_slot_mapping,
                test_combo_key, test_ult_requires_hold, test_hold_threshold_setting,
                test_infinite, test_wrong_key, test_key_map, test_any_mode,
-               test_gamepad, test_pad_ult_modes, test_team_unique, test_skip, test_empty_segment_skipped,
+               test_gamepad, test_pad_ult_modes, test_team_unique, test_move_item, test_skip, test_empty_segment_skipped,
                test_hotdata_dirty_flow, test_per_rotation_team,
                test_rotation_team_affects_keys, test_rename_rotation,
                test_store_roundtrip, test_settings_keys, test_export_import,
